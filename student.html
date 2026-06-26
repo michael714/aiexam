@@ -18,7 +18,7 @@
       }
 
       .container {
-        max-width: 640px;
+        max-width: 720px;
         margin: 0 auto;
         background: #fff;
         border-radius: 8px;
@@ -38,25 +38,12 @@
         margin-bottom: 24px;
       }
 
-      .question-box {
-        background: #e8f0fe;
-        border-left: 4px solid #1a73e8;
-        border-radius: 4px;
-        padding: 16px;
-        margin-bottom: 24px;
+      .view-panel {
+        display: none;
       }
 
-      .question-label {
-        font-size: 12px;
-        font-weight: 600;
-        color: #1a73e8;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        margin-bottom: 8px;
-      }
-
-      .question-text {
-        font-size: 16px;
+      .view-panel.active {
+        display: block;
       }
 
       label {
@@ -85,8 +72,87 @@
       }
 
       textarea {
-        min-height: 120px;
+        min-height: 140px;
         resize: vertical;
+      }
+
+      .quiz-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+
+      .quiz-card {
+        background: #f8f9fa;
+        border: 1px solid #dadce0;
+        border-radius: 8px;
+        cursor: pointer;
+        padding: 16px;
+        text-align: left;
+        transition: border-color 0.2s, background 0.2s;
+        width: 100%;
+      }
+
+      .quiz-card:hover {
+        background: #e8f0fe;
+        border-color: #c2d7fa;
+      }
+
+      .quiz-card-title {
+        color: #202124;
+        font-size: 16px;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+
+      .quiz-card-meta {
+        color: #5f6368;
+        font-size: 13px;
+      }
+
+      .question-box {
+        background: #e8f0fe;
+        border-left: 4px solid #1a73e8;
+        border-radius: 4px;
+        padding: 16px;
+        margin-bottom: 24px;
+      }
+
+      .question-label {
+        font-size: 12px;
+        font-weight: 600;
+        color: #1a73e8;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 8px;
+      }
+
+      .question-text {
+        font-size: 16px;
+      }
+
+      .quiz-header {
+        color: #5f6368;
+        font-size: 14px;
+        margin-bottom: 16px;
+      }
+
+      .quiz-header strong {
+        color: #202124;
+      }
+
+      .nav-row {
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+        margin-top: 8px;
+      }
+
+      .nav-row .left,
+      .nav-row .right {
+        display: flex;
+        gap: 12px;
       }
 
       button {
@@ -110,6 +176,24 @@
         cursor: not-allowed;
       }
 
+      button.secondary {
+        background: #fff;
+        border: 1px solid #dadce0;
+        color: #202124;
+      }
+
+      button.secondary:hover {
+        background: #f1f3f4;
+      }
+
+      button.submit {
+        background: #137333;
+      }
+
+      button.submit:hover {
+        background: #0d652d;
+      }
+
       .message {
         margin-top: 16px;
         font-size: 14px;
@@ -129,76 +213,276 @@
         color: #c5221f;
         display: block;
       }
+
+      .empty-state {
+        color: #5f6368;
+        font-size: 14px;
+        padding: 16px;
+        text-align: center;
+      }
     </style>
   </head>
   <body>
     <div class="container">
       <h1>Student Quiz</h1>
-      <p class="subtitle">Read the question below and submit your answer.</p>
+      <p class="subtitle" id="pageSubtitle">Enter your name and choose a quiz to begin.</p>
 
-      <div class="question-box">
-        <div class="question-label">Question</div>
-        <div class="question-text" id="question">Loading question...</div>
-      </div>
-
-      <form id="quizForm" onsubmit="handleSubmit(event)">
+      <section id="view-select" class="view-panel active">
         <label for="studentName">Your Name</label>
         <input type="text" id="studentName" required placeholder="Enter your name">
 
-        <label for="answer">Your Answer</label>
-        <textarea id="answer" required placeholder="Type your answer here..."></textarea>
+        <label>Available Quizzes</label>
+        <div class="quiz-list" id="quizList">
+          <div class="empty-state">Loading quizzes...</div>
+        </div>
+        <div class="message" id="selectMessage"></div>
+      </section>
 
-        <button type="submit" id="submitBtn">Submit</button>
-      </form>
+      <section id="view-quiz" class="view-panel">
+        <div class="quiz-header" id="quizHeader"></div>
 
-      <div class="message" id="message"></div>
+        <div class="question-box">
+          <div class="question-label" id="questionNumber">Question 1 of 1</div>
+          <div class="question-text" id="questionText"></div>
+        </div>
+
+        <label for="answerInput">Your Answer</label>
+        <textarea id="answerInput" placeholder="Type your answer here..."></textarea>
+
+        <div class="nav-row">
+          <div class="left">
+            <button type="button" class="secondary" id="backToListBtn" onclick="backToQuizList()">Change Quiz</button>
+          </div>
+          <div class="right">
+            <button type="button" class="secondary" id="prevBtn" onclick="goToPrevious()">Previous</button>
+            <button type="button" id="nextBtn" onclick="goToNext()">Next</button>
+            <button type="button" class="submit" id="submitBtn" onclick="submitQuiz()" style="display:none;">Submit Quiz</button>
+          </div>
+        </div>
+
+        <div class="message" id="quizMessage"></div>
+      </section>
+
+      <section id="view-done" class="view-panel">
+        <div class="question-box">
+          <div class="question-label">Submitted</div>
+          <div class="question-text" id="doneMessage"></div>
+        </div>
+        <button type="button" onclick="startOver()">Take Another Quiz</button>
+      </section>
     </div>
 
     <script>
+      var state = {
+        studentName: '',
+        quizId: '',
+        quizName: '',
+        questions: [],
+        currentIndex: 0,
+        answers: {}
+      };
+
       document.addEventListener('DOMContentLoaded', function() {
-        google.script.run
-          .withSuccessHandler(function(question) {
-            document.getElementById('question').textContent = question || '(No question set)';
-          })
-          .withFailureHandler(showError)
-          .getQuestion();
+        loadQuizList();
       });
 
-      function handleSubmit(event) {
-        event.preventDefault();
+      function loadQuizList() {
+        google.script.run
+          .withSuccessHandler(renderQuizList)
+          .withFailureHandler(function(err) {
+            showMessage('selectMessage', err.message || String(err), true);
+            document.getElementById('quizList').innerHTML =
+              '<div class="empty-state">Could not load quizzes.</div>';
+          })
+          .getQuizList();
+      }
 
-        var name = document.getElementById('studentName').value.trim();
-        var answer = document.getElementById('answer').value.trim();
-        var btn = document.getElementById('submitBtn');
-        var message = document.getElementById('message');
-
-        if (!name || !answer) {
-          showError({ message: 'Please enter your name and answer.' });
+      function renderQuizList(quizzes) {
+        var list = document.getElementById('quizList');
+        if (!quizzes || !quizzes.length) {
+          list.innerHTML = '<div class="empty-state">No quizzes are available yet.</div>';
           return;
         }
 
-        btn.disabled = true;
-        message.className = 'message';
-        message.style.display = 'none';
+        list.innerHTML = '';
+        for (var i = 0; i < quizzes.length; i++) {
+          var quiz = quizzes[i];
+          var card = document.createElement('button');
+          card.type = 'button';
+          card.className = 'quiz-card';
+          card.setAttribute('data-quiz-id', quiz.quizId);
+          card.onclick = (function(selectedQuiz) {
+            return function() {
+              startQuiz(selectedQuiz);
+            };
+          })(quiz);
+
+          var title = document.createElement('div');
+          title.className = 'quiz-card-title';
+          title.textContent = quiz.quizName;
+
+          var meta = document.createElement('div');
+          meta.className = 'quiz-card-meta';
+          meta.textContent = quiz.questionCount + ' question' + (quiz.questionCount === 1 ? '' : 's');
+
+          card.appendChild(title);
+          card.appendChild(meta);
+          list.appendChild(card);
+        }
+      }
+
+      function startQuiz(quiz) {
+        var name = document.getElementById('studentName').value.trim();
+        if (!name) {
+          showMessage('selectMessage', 'Please enter your name before choosing a quiz.', true);
+          return;
+        }
+
+        clearMessage('selectMessage');
+        state.studentName = name;
+        state.quizId = quiz.quizId;
+        state.quizName = quiz.quizName;
+        state.currentIndex = 0;
+        state.answers = {};
+
+        google.script.run
+          .withSuccessHandler(function(questions) {
+            state.questions = questions;
+            showView('quiz');
+            renderCurrentQuestion();
+          })
+          .withFailureHandler(function(err) {
+            showMessage('selectMessage', err.message || String(err), true);
+          })
+          .getQuestionsForQuiz(quiz.quizId);
+      }
+
+      function renderCurrentQuestion() {
+        var question = state.questions[state.currentIndex];
+        var total = state.questions.length;
+        var isLast = state.currentIndex === total - 1;
+
+        document.getElementById('pageSubtitle').textContent =
+          'Answer each question, then submit the quiz when you are finished.';
+        document.getElementById('quizHeader').innerHTML =
+          'Quiz: <strong>' + escapeHtml(state.quizName) + '</strong> · Student: <strong>' +
+          escapeHtml(state.studentName) + '</strong>';
+        document.getElementById('questionNumber').textContent =
+          'Question ' + (state.currentIndex + 1) + ' of ' + total;
+        document.getElementById('questionText').textContent = question.question;
+
+        var savedAnswer = state.answers[question.questionId];
+        document.getElementById('answerInput').value = savedAnswer || '';
+
+        document.getElementById('prevBtn').disabled = state.currentIndex === 0;
+        document.getElementById('nextBtn').style.display = isLast ? 'none' : 'inline-block';
+        document.getElementById('submitBtn').style.display = isLast ? 'inline-block' : 'none';
+        clearMessage('quizMessage');
+      }
+
+      function saveCurrentAnswer() {
+        var question = state.questions[state.currentIndex];
+        state.answers[question.questionId] = document.getElementById('answerInput').value.trim();
+      }
+
+      function goToPrevious() {
+        if (state.currentIndex === 0) {
+          return;
+        }
+        saveCurrentAnswer();
+        state.currentIndex--;
+        renderCurrentQuestion();
+      }
+
+      function goToNext() {
+        saveCurrentAnswer();
+        if (state.currentIndex < state.questions.length - 1) {
+          state.currentIndex++;
+          renderCurrentQuestion();
+        }
+      }
+
+      function submitQuiz() {
+        saveCurrentAnswer();
+
+        var payload = [];
+        for (var i = 0; i < state.questions.length; i++) {
+          var question = state.questions[i];
+          payload.push({
+            questionId: question.questionId,
+            answer: state.answers[question.questionId] || ''
+          });
+        }
+
+        var submitBtn = document.getElementById('submitBtn');
+        var nextBtn = document.getElementById('nextBtn');
+        var prevBtn = document.getElementById('prevBtn');
+        submitBtn.disabled = true;
+        nextBtn.disabled = true;
+        prevBtn.disabled = true;
 
         google.script.run
           .withSuccessHandler(function(result) {
-            btn.disabled = false;
-            document.getElementById('quizForm').reset();
-            message.textContent = result;
-            message.className = 'message success';
+            document.getElementById('doneMessage').textContent = result;
+            showView('done');
           })
           .withFailureHandler(function(err) {
-            btn.disabled = false;
-            showError(err);
+            submitBtn.disabled = false;
+            nextBtn.disabled = false;
+            prevBtn.disabled = state.currentIndex === 0;
+            showMessage('quizMessage', err.message || String(err), true);
           })
-          .submitAnswer(name, answer);
+          .submitQuiz(state.studentName, state.quizId, JSON.stringify(payload));
       }
 
-      function showError(err) {
-        var message = document.getElementById('message');
-        message.textContent = err.message || String(err);
-        message.className = 'message error';
+      function backToQuizList() {
+        saveCurrentAnswer();
+        showView('select');
+        document.getElementById('pageSubtitle').textContent = 'Enter your name and choose a quiz to begin.';
+      }
+
+      function startOver() {
+        state = {
+          studentName: '',
+          quizId: '',
+          quizName: '',
+          questions: [],
+          currentIndex: 0,
+          answers: {}
+        };
+        document.getElementById('studentName').value = '';
+        clearMessage('selectMessage');
+        clearMessage('quizMessage');
+        showView('select');
+        document.getElementById('pageSubtitle').textContent = 'Enter your name and choose a quiz to begin.';
+        loadQuizList();
+      }
+
+      function showView(viewName) {
+        document.getElementById('view-select').classList.toggle('active', viewName === 'select');
+        document.getElementById('view-quiz').classList.toggle('active', viewName === 'quiz');
+        document.getElementById('view-done').classList.toggle('active', viewName === 'done');
+      }
+
+      function showMessage(elementId, text, isError) {
+        var message = document.getElementById(elementId);
+        message.textContent = text;
+        message.className = 'message ' + (isError ? 'error' : 'success');
+      }
+
+      function clearMessage(elementId) {
+        var message = document.getElementById(elementId);
+        message.className = 'message';
+        message.style.display = 'none';
+        message.textContent = '';
+      }
+
+      function escapeHtml(text) {
+        return String(text)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
       }
     </script>
   </body>

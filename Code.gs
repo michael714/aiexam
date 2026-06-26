@@ -2,9 +2,17 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Quiz')
     .addItem('Set up sheets', 'setupSheet')
+    .addItem('Add Question and Rubric', 'showAddQuestionDialog')
     .addItem('Authorize API access (run once)', 'authorizeExternalRequests')
     .addItem('Run AI Evaluation', 'runEvaluationWithAlert')
     .addToUi();
+}
+
+function showAddQuestionDialog() {
+  var html = HtmlService.createHtmlOutputFromFile('add-question')
+    .setWidth(520)
+    .setHeight(520);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Add Question and Rubric');
 }
 
 function authorizeExternalRequests() {
@@ -26,6 +34,13 @@ function runEvaluationWithAlert() {
 
 function ensureResponsesHeaders_(sheet) {
   if (sheet.getRange('A1').getValue() === 'Timestamp') {
+    if (sheet.getRange('E1').getValue() !== 'Question ID') {
+      sheet.getRange('E1').setValue('Question ID');
+    }
+    if (sheet.getRange('F1').getValue() !== 'Quiz ID') {
+      sheet.getRange('F1').setValue('Quiz ID');
+    }
+    formatHeaderRow_(sheet, 1, 6);
     return;
   }
   if (sheet.getLastRow() > 0) {
@@ -75,7 +90,27 @@ function setupSheet(spreadsheetId) {
 
   removeDefaultSheet_(ss);
 
-  return 'Sheet setup complete. Add one question and rubric per row in Questions (columns B and C); row numbers match Responses.';
+  return 'Sheet setup complete. Add questions via the teacher page (?teach) or Quiz > Add Question and Rubric.';
+}
+
+function ensureQuestionsHeaders_(sheet) {
+  if (sheet.getRange('B1').getValue() === 'Question') {
+    if (sheet.getRange('D1').getValue() !== 'Quiz Name') {
+      sheet.getRange('D1').setValue('Quiz Name');
+    }
+    if (sheet.getRange('E1').getValue() !== 'Quiz ID') {
+      sheet.getRange('E1').setValue('Quiz ID');
+    }
+    if (sheet.getRange('F1').getValue() !== 'Question ID') {
+      sheet.getRange('F1').setValue('Question ID');
+    }
+    formatHeaderRow_(sheet, 1, 6);
+    return;
+  }
+  if (sheet.getLastRow() > 0) {
+    sheet.insertRowBefore(1);
+  }
+  setupQuestionsSheet_(sheet);
 }
 
 function ensureSheet_(ss, name) {
@@ -94,30 +129,49 @@ function setColumnWidths_(sheet, widths) {
 
 function setupQuestionsSheet_(sheet) {
   sheet.clear();
-  sheet.getRange('A1:C1').setValues([['Row', 'Question', 'Rubric']]);
+  sheet.getRange('A1:F1').setValues([['Row', 'Question', 'Rubric', 'Quiz Name', 'Quiz ID', 'Question ID']]);
   sheet.getRange('A2').setValue(2);
   sheet.getRange('B2').setValue('What is the capital of France?');
   sheet.getRange('C2').setValue(
     'Award full credit for "Paris". Partial credit for mentioning France. ' +
     'Deduct points for incorrect capitals.'
   );
-  setColumnWidths_(sheet, [60, 360, 360]);
+  sheet.getRange('D2').setValue('Sample Quiz');
+  sheet.getRange('E2').setValue(generateShortId_());
+  sheet.getRange('F2').setValue(generateShortId_());
+  setColumnWidths_(sheet, [60, 360, 360, 160, 100, 100]);
   sheet.setFrozenRows(1);
-  formatHeaderRow_(sheet, 1, 3);
+  formatHeaderRow_(sheet, 1, 6);
 }
 
 function setupResponsesSheet_(sheet) {
-  sheet.getRange('A1:D1').setValues([['Timestamp', 'Student Name', 'Answer', 'Status']]);
-  setColumnWidths_(sheet, [160, 160, 360, 100]);
+  sheet.getRange('A1:F1').setValues([['Timestamp', 'Student Name', 'Answer', 'Status', 'Question ID', 'Quiz ID']]);
+  setColumnWidths_(sheet, [160, 160, 360, 100, 100, 100]);
   sheet.setFrozenRows(1);
-  formatHeaderRow_(sheet, 1, 4);
+  formatHeaderRow_(sheet, 1, 6);
 }
 
 function setupEvaluationsSheet_(sheet) {
-  sheet.getRange('A1:E1').setValues([['Timestamp', 'Student Name', 'Answer', 'Rubric', 'AI Evaluation']]);
-  setColumnWidths_(sheet, [160, 160, 300, 300, 400]);
+  sheet.getRange('A1:G1').setValues([
+    ['Timestamp', 'Student Name', 'Answer', 'Rubric', 'AI Evaluation', 'Question ID', 'Quiz ID']
+  ]);
+  setColumnWidths_(sheet, [160, 160, 300, 300, 400, 100, 100]);
   sheet.setFrozenRows(1);
-  formatHeaderRow_(sheet, 1, 5);
+  formatHeaderRow_(sheet, 1, 7);
+}
+
+function ensureEvaluationsHeaders_(sheet) {
+  if (sheet.getRange('A1').getValue() === 'Timestamp') {
+    if (sheet.getRange('F1').getValue() !== 'Question ID') {
+      sheet.getRange('F1').setValue('Question ID');
+    }
+    if (sheet.getRange('G1').getValue() !== 'Quiz ID') {
+      sheet.getRange('G1').setValue('Quiz ID');
+    }
+    formatHeaderRow_(sheet, 1, 7);
+    return;
+  }
+  setupEvaluationsSheet_(sheet);
 }
 
 function setupInstructionsSheet_(ss) {
@@ -129,13 +183,13 @@ function setupInstructionsSheet_(ss) {
   sheet.clear();
   sheet.getRange('A1').setValue('Quiz Prototype Setup').setFontSize(14).setFontWeight('bold').setFontColor('#1a73e8');
   sheet.getRange('A3:A9').setValues([
-    ['1. Add each question in Questions column B and its rubric in column C.'],
-    ['2. Use the same row number as the matching response (row 2 with row 2, etc.).'],
-    ['3. Deploy the script as a web app (Deploy > New deployment > Web app).'],
-    ['4. Share the student URL: <web app url>?page=student'],
-    ['5. Open the teacher URL (web app url without parameters) to run evaluations.'],
-    ['6. Student answers appear on the Responses tab with Status = Pending.'],
-    ['7. Run AI Evaluation to grade Pending rows; Status becomes Complete when done.']
+    ['1. Add questions via the teacher page (?teach) or Quiz > Add Question and Rubric.'],
+    ['2. Each response stores Question ID (E) and Quiz ID (F) to link back to Questions.'],
+    ['3. Questions in the same quiz share a Quiz Name and Quiz ID (column E).'],
+    ['4. Deploy the script as a web app (Deploy > New deployment > Web app).'],
+    ['5. Share the student URL: <web app url> (the deployment URL with no parameters).'],
+    ['6. Open the teacher URL (<web app url>?teach) to add questions and run evaluations.'],
+    ['7. Student answers appear on Responses with Status = Pending; evaluation sets Complete.']
   ]);
   sheet.setColumnWidth(1, 640);
   sheet.getRange('A3:A9').setWrap(true);
@@ -157,14 +211,14 @@ function removeDefaultSheet_(ss) {
 }
 
 function doGet(e) {
-  var page = e && e.parameter && e.parameter.page;
-  if (page === 'student') {
-    return HtmlService.createHtmlOutputFromFile('student')
-      .setTitle('Student Quiz')
+  var params = e && e.parameter;
+  if (params && params.teach !== undefined) {
+    return HtmlService.createHtmlOutputFromFile('teacher')
+      .setTitle('Teacher Dashboard')
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
   }
-  return HtmlService.createHtmlOutputFromFile('teacher')
-    .setTitle('Teacher Dashboard')
+  return HtmlService.createHtmlOutputFromFile('student')
+    .setTitle('Student Quiz')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
@@ -174,13 +228,320 @@ function getNextResponseRow_(responsesSheet) {
   return lastRow < 2 ? 2 : lastRow + 1;
 }
 
+function getNextQuestionsRow_(questionsSheet) {
+  ensureQuestionsHeaders_(questionsSheet);
+  var lastRow = questionsSheet.getLastRow();
+  return lastRow < 2 ? 2 : lastRow + 1;
+}
+
+function generateShortId_() {
+  var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  var id = '';
+  for (var i = 0; i < 8; i++) {
+    id += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return id;
+}
+
+function generateQuizId_() {
+  return generateShortId_();
+}
+
+function collectExistingIds_(questionsSheet, column) {
+  var existing = {};
+  var lastRow = questionsSheet.getLastRow();
+  if (lastRow < 2) {
+    return existing;
+  }
+
+  var ids = questionsSheet.getRange(column + '2:' + column + lastRow).getValues();
+  for (var i = 0; i < ids.length; i++) {
+    var value = String(ids[i][0]).trim();
+    if (value) {
+      existing[value] = true;
+    }
+  }
+
+  return existing;
+}
+
+function generateUniqueId_(existing) {
+  var id;
+  do {
+    id = generateShortId_();
+  } while (existing[id]);
+  existing[id] = true;
+  return id;
+}
+
+function generateUniqueQuizId_(questionsSheet) {
+  return generateUniqueId_(collectExistingIds_(questionsSheet, 'E'));
+}
+
+function generateUniqueQuestionId_(questionsSheet) {
+  return generateUniqueId_(collectExistingIds_(questionsSheet, 'F'));
+}
+
+function ensureQuestionIds_(questionsSheet) {
+  ensureQuestionsHeaders_(questionsSheet);
+  var lastRow = questionsSheet.getLastRow();
+  if (lastRow < 2) {
+    return;
+  }
+
+  var existing = collectExistingIds_(questionsSheet, 'F');
+  var rows = questionsSheet.getRange('B2:F' + lastRow).getValues();
+
+  for (var i = 0; i < rows.length; i++) {
+    if (!rows[i][0]) {
+      continue;
+    }
+    if (String(rows[i][4]).trim()) {
+      continue;
+    }
+    var questionId = generateUniqueId_(existing);
+    questionsSheet.getRange('F' + (i + 2)).setValue(questionId);
+  }
+}
+
+function findQuizIdByName_(questionsSheet, quizName) {
+  var normalized = String(quizName).trim().toLowerCase();
+  if (!normalized) {
+    return '';
+  }
+
+  var lastRow = questionsSheet.getLastRow();
+  if (lastRow < 2) {
+    return '';
+  }
+
+  var rows = questionsSheet.getRange('D2:E' + lastRow).getValues();
+  for (var i = 0; i < rows.length; i++) {
+    if (String(rows[i][0]).trim().toLowerCase() === normalized && rows[i][1]) {
+      return String(rows[i][1]).trim();
+    }
+  }
+
+  return '';
+}
+
 function getQuestionAndRubricForRow_(questionsSheet, row) {
   if (!questionsSheet) {
     throw new Error('Questions sheet not found.');
   }
   return {
     question: questionsSheet.getRange('B' + row).getValue(),
-    rubric: questionsSheet.getRange('C' + row).getValue()
+    rubric: questionsSheet.getRange('C' + row).getValue(),
+    quizName: questionsSheet.getRange('D' + row).getValue(),
+    quizId: questionsSheet.getRange('E' + row).getValue(),
+    questionId: questionsSheet.getRange('F' + row).getValue()
+  };
+}
+
+function getQuestionAndRubricByQuestionId_(questionsSheet, questionId, quizId) {
+  ensureQuestionsHeaders_(questionsSheet);
+  questionId = normalizeSheetId_(questionId);
+  quizId = normalizeSheetId_(quizId);
+  var lastRow = questionsSheet.getLastRow();
+  if (lastRow < 2 || !questionId) {
+    return {
+      questionText: '',
+      rubricText: '',
+      quizName: '',
+      quizId: '',
+      questionId: questionId
+    };
+  }
+
+  var rows = questionsSheet.getRange('A2:F' + lastRow).getValues();
+  var fallback = null;
+
+  for (var i = 0; i < rows.length; i++) {
+    if (normalizeSheetId_(rows[i][5]) !== questionId) {
+      continue;
+    }
+
+    var entry = {
+      questionText: cellText_(rows[i][1]),
+      rubricText: cellText_(rows[i][2]),
+      quizName: cellText_(rows[i][3]),
+      quizId: normalizeSheetId_(rows[i][4]),
+      questionId: questionId
+    };
+
+    if (!quizId || entry.quizId === quizId) {
+      return entry;
+    }
+
+    if (!fallback) {
+      fallback = entry;
+    }
+  }
+
+  if (fallback) {
+    return fallback;
+  }
+
+  return {
+    questionText: '',
+    rubricText: '',
+    quizName: '',
+    quizId: quizId,
+    questionId: questionId
+  };
+}
+
+function normalizeSheetId_(value) {
+  return String(value == null ? '' : value).trim().replace(/^'/, '');
+}
+
+function cellText_(value) {
+  if (value == null) {
+    return '';
+  }
+  return String(value);
+}
+
+function getIdsFromResponseRow_(responsesSheet, row) {
+  if (!responsesSheet || row < 2 || row > responsesSheet.getLastRow()) {
+    return { questionId: '', quizId: '' };
+  }
+
+  ensureResponsesHeaders_(responsesSheet);
+  var data = responsesSheet.getRange('A' + row + ':F' + row).getValues()[0];
+  return {
+    questionId: normalizeSheetId_(data[4]),
+    quizId: normalizeSheetId_(data[5])
+  };
+}
+
+function getQuestionBankForQuiz_(questionsSheet, quizId) {
+  ensureQuestionsHeaders_(questionsSheet);
+  ensureQuestionIds_(questionsSheet);
+
+  quizId = normalizeSheetId_(quizId);
+  var bank = {};
+  var lastRow = questionsSheet.getLastRow();
+  if (lastRow < 2) {
+    return bank;
+  }
+
+  var rows = questionsSheet.getRange('A2:F' + lastRow).getValues();
+  var number = 0;
+
+  for (var i = 0; i < rows.length; i++) {
+    var rowQuizId = normalizeSheetId_(rows[i][4]);
+    var questionId = normalizeSheetId_(rows[i][5]);
+    if (rowQuizId !== quizId || !questionId || !cellText_(rows[i][1])) {
+      continue;
+    }
+
+    number++;
+    bank[questionId] = {
+      questionText: cellText_(rows[i][1]),
+      rubricText: cellText_(rows[i][2]),
+      questionNumber: number
+    };
+  }
+
+  return bank;
+}
+
+function lookupQuestionInBank_(bank, questionId) {
+  questionId = normalizeSheetId_(questionId);
+  if (!questionId) {
+    return null;
+  }
+  if (bank[questionId]) {
+    return bank[questionId];
+  }
+
+  for (var key in bank) {
+    if (bank.hasOwnProperty(key) && normalizeSheetId_(key) === questionId) {
+      return bank[key];
+    }
+  }
+
+  return null;
+}
+
+function resolveQuestionIdForEval_(evalRowData, responseIds, selectedQuizId) {
+  selectedQuizId = normalizeSheetId_(selectedQuizId);
+  var evalColF = normalizeSheetId_(evalRowData[5]);
+  var evalColG = normalizeSheetId_(evalRowData[6]);
+
+  if (evalColF && evalColF !== selectedQuizId) {
+    return evalColF;
+  }
+  if (evalColG && evalColG !== selectedQuizId) {
+    return evalColG;
+  }
+  if (responseIds.questionId && responseIds.questionId !== selectedQuizId) {
+    return responseIds.questionId;
+  }
+  return evalColF || evalColG || responseIds.questionId;
+}
+
+function findQuestionById_(questionsSheet, questionId, quizId, questionBank) {
+  questionId = normalizeSheetId_(questionId);
+  quizId = normalizeSheetId_(quizId);
+  if (!questionId) {
+    return null;
+  }
+
+  var bankEntry = questionBank ? lookupQuestionInBank_(questionBank, questionId) : null;
+  if (bankEntry) {
+    return bankEntry;
+  }
+
+  ensureQuestionsHeaders_(questionsSheet);
+  var lastRow = questionsSheet.getLastRow();
+  if (lastRow < 2) {
+    return null;
+  }
+
+  var values = questionsSheet.getRange('A2:F' + lastRow).getValues();
+  var questionDisplay = questionsSheet.getRange('B2:B' + lastRow).getDisplayValues();
+  var fallback = null;
+
+  for (var i = 0; i < values.length; i++) {
+    if (normalizeSheetId_(values[i][5]) !== questionId) {
+      continue;
+    }
+
+    var entry = {
+      questionText: cellText_(questionDisplay[i][0] || values[i][1]),
+      rubricText: cellText_(values[i][2]),
+      questionNumber: 999
+    };
+
+    if (!quizId || normalizeSheetId_(values[i][4]) === quizId) {
+      return entry;
+    }
+
+    if (!fallback) {
+      fallback = entry;
+    }
+  }
+
+  return fallback;
+}
+
+function resolveEvalRowIds_(evalRowData, responsesSheet, evalRow, selectedQuizId) {
+  var responseIds = getIdsFromResponseRow_(responsesSheet, evalRow);
+  var questionId = resolveQuestionIdForEval_(evalRowData, responseIds, selectedQuizId);
+  var evalQuizId = normalizeSheetId_(evalRowData[6]);
+  var quizId = evalQuizId || responseIds.quizId;
+
+  if (normalizeSheetId_(evalRowData[5]) === selectedQuizId && evalQuizId) {
+    quizId = evalQuizId;
+  } else if (responseIds.quizId) {
+    quizId = responseIds.quizId;
+  }
+
+  return {
+    questionId: questionId,
+    quizId: quizId
   };
 }
 
@@ -189,29 +550,431 @@ function isPendingStatus_(status) {
 }
 
 function getQuestion() {
+  return getQuestionInfo().question;
+}
+
+function getQuestionInfo() {
   var ss = getQuizSpreadsheet_();
   var questionsSheet = ss.getSheetByName('Questions');
   if (!questionsSheet) {
     throw new Error('Questions sheet not found.');
   }
+  ensureQuestionsHeaders_(questionsSheet);
   var responsesSheet = ss.getSheetByName('Responses');
   var row = responsesSheet ? getNextResponseRow_(responsesSheet) : 2;
-  return getQuestionAndRubricForRow_(questionsSheet, row).question;
+  var qr = getQuestionAndRubricForRow_(questionsSheet, row);
+  return {
+    row: row,
+    question: qr.question,
+    rubric: qr.rubric,
+    quizName: qr.quizName,
+    quizId: qr.quizId
+  };
 }
 
-function submitAnswer(studentName, answer) {
+function addQuestionAndRubric(quizName, question, rubric) {
+  quizName = String(quizName).trim();
+  question = String(question).trim();
+  rubric = String(rubric).trim();
+
+  if (!quizName) {
+    throw new Error('Quiz name is required.');
+  }
+  if (!question) {
+    throw new Error('Question is required.');
+  }
+  if (!rubric) {
+    throw new Error('Rubric is required.');
+  }
+
+  var ss = getQuizSpreadsheet_();
+  var questionsSheet = ensureSheet_(ss, 'Questions');
+  ensureQuestionsHeaders_(questionsSheet);
+
+  var quizId = findQuizIdByName_(questionsSheet, quizName);
+  var isNewQuiz = !quizId;
+  if (!quizId) {
+    quizId = generateUniqueQuizId_(questionsSheet);
+  }
+
+  var row = getNextQuestionsRow_(questionsSheet);
+  var questionId = generateUniqueQuestionId_(questionsSheet);
+  questionsSheet.getRange('A' + row).setValue(row);
+  questionsSheet.getRange('B' + row).setValue(question);
+  questionsSheet.getRange('C' + row).setValue(rubric);
+  questionsSheet.getRange('D' + row).setValue(quizName);
+  questionsSheet.getRange('E' + row).setValue(quizId);
+  questionsSheet.getRange('F' + row).setValue(questionId);
+
+  SpreadsheetApp.flush();
+
+  var message = 'Question saved in row ' + row + '.';
+  if (isNewQuiz) {
+    message += ' New quiz ID: ' + quizId + '.';
+  } else {
+    message += ' Using existing quiz ID: ' + quizId + '.';
+  }
+  message += ' Question ID: ' + questionId + '.';
+
+  return {
+    row: row,
+    quizName: quizName,
+    quizId: quizId,
+    questionId: questionId,
+    isNewQuiz: isNewQuiz,
+    message: message
+  };
+}
+
+function getQuizList() {
+  var ss = getQuizSpreadsheet_();
+  var questionsSheet = ss.getSheetByName('Questions');
+  if (!questionsSheet) {
+    return [];
+  }
+
+  ensureQuestionsHeaders_(questionsSheet);
+  ensureQuestionIds_(questionsSheet);
+
+  var lastRow = questionsSheet.getLastRow();
+  if (lastRow < 2) {
+    return [];
+  }
+
+  var rows = questionsSheet.getRange('B2:F' + lastRow).getValues();
+  var quizzes = {};
+  var list = [];
+
+  for (var i = 0; i < rows.length; i++) {
+    var question = rows[i][0];
+    var quizName = String(rows[i][2]).trim();
+    var quizId = String(rows[i][3]).trim();
+    if (!question || !quizId) {
+      continue;
+    }
+
+    if (!quizzes[quizId]) {
+      quizzes[quizId] = {
+        quizId: quizId,
+        quizName: quizName || 'Unnamed Quiz',
+        questionCount: 0
+      };
+      list.push(quizzes[quizId]);
+    }
+    quizzes[quizId].questionCount++;
+  }
+
+  return list;
+}
+
+function getQuizEvaluationList() {
+  var list = getQuizList();
+  var ss = getQuizSpreadsheet_();
+  var responsesSheet = ss.getSheetByName('Responses');
+  var pendingByQuiz = {};
+
+  if (responsesSheet && responsesSheet.getLastRow() >= 2) {
+    ensureResponsesHeaders_(responsesSheet);
+    var lastRow = responsesSheet.getLastRow();
+    var rows = responsesSheet.getRange('A2:F' + lastRow).getValues();
+
+    for (var i = 0; i < rows.length; i++) {
+      if (!isPendingStatus_(rows[i][3])) {
+        continue;
+      }
+      var rowQuizId = String(rows[i][5] || '').trim();
+      if (!rowQuizId) {
+        continue;
+      }
+      pendingByQuiz[rowQuizId] = (pendingByQuiz[rowQuizId] || 0) + 1;
+    }
+  }
+
+  for (var j = 0; j < list.length; j++) {
+    list[j].pendingCount = pendingByQuiz[list[j].quizId] || 0;
+  }
+
+  return list;
+}
+
+function getQuizReviewList() {
+  var list = getQuizList();
+  var ss = getQuizSpreadsheet_();
+  var evalSheet = ss.getSheetByName('Evaluations');
+  var evaluatedByQuiz = {};
+
+  if (evalSheet && evalSheet.getLastRow() >= 2) {
+    ensureEvaluationsHeaders_(evalSheet);
+    var lastRow = evalSheet.getLastRow();
+    var rows = evalSheet.getRange('A2:G' + lastRow).getValues();
+
+    for (var i = 0; i < rows.length; i++) {
+      var evaluation = String(rows[i][4] || '').trim();
+      var rowQuizId = String(rows[i][6] || '').trim();
+      if (!rowQuizId || !evaluation) {
+        continue;
+      }
+      evaluatedByQuiz[rowQuizId] = (evaluatedByQuiz[rowQuizId] || 0) + 1;
+    }
+  }
+
+  for (var j = 0; j < list.length; j++) {
+    list[j].evaluatedCount = evaluatedByQuiz[list[j].quizId] || 0;
+  }
+
+  return list;
+}
+
+function getEvaluationsForQuiz(quizId) {
+  quizId = normalizeSheetId_(quizId);
+  if (!quizId) {
+    throw new Error('Quiz ID is required.');
+  }
+
+  var ss = getQuizSpreadsheet_();
+  var questionsSheet = ss.getSheetByName('Questions');
+  var evalSheet = ss.getSheetByName('Evaluations');
+  var responsesSheet = ss.getSheetByName('Responses');
+
+  if (!questionsSheet) {
+    throw new Error('Questions sheet not found.');
+  }
+  if (!evalSheet || evalSheet.getLastRow() < 2) {
+    throw new Error('No evaluations found for this quiz yet.');
+  }
+
+  ensureQuestionsHeaders_(questionsSheet);
+  ensureEvaluationsHeaders_(evalSheet);
+
+  var questionBank = getQuestionBankForQuiz_(questionsSheet, quizId);
+  if (!Object.keys(questionBank).length) {
+    throw new Error('No questions found for that quiz.');
+  }
+
+  var lastRow = evalSheet.getLastRow();
+  var rows = evalSheet.getRange('A2:G' + lastRow).getValues();
+  var items = [];
+
+  for (var i = 0; i < rows.length; i++) {
+    var evalRow = i + 2;
+    var responseIds = getIdsFromResponseRow_(responsesSheet, evalRow);
+    var ids = resolveEvalRowIds_(rows[i], responsesSheet, evalRow, quizId);
+    var rowQuizId = ids.quizId;
+    var questionId = ids.questionId;
+
+    if (rowQuizId !== quizId && responseIds.quizId !== quizId) {
+      continue;
+    }
+    if (rowQuizId !== quizId) {
+      rowQuizId = responseIds.quizId;
+      questionId = questionId || responseIds.questionId;
+    }
+
+    var evaluation = cellText_(rows[i][4]).trim();
+    if (!evaluation) {
+      continue;
+    }
+
+    if (!normalizeSheetId_(rows[i][5]) && questionId) {
+      evalSheet.getRange('F' + evalRow).setValue(questionId);
+    }
+    if (!normalizeSheetId_(rows[i][6]) && rowQuizId) {
+      evalSheet.getRange('G' + evalRow).setValue(rowQuizId);
+    }
+
+    var details = findQuestionById_(questionsSheet, questionId, quizId, questionBank);
+    if (!details || !details.questionText) {
+      var rowAligned = getQuestionAndRubricForRow_(questionsSheet, evalRow);
+      if (cellText_(rowAligned.question)) {
+        details = {
+          questionText: cellText_(rowAligned.question),
+          rubricText: cellText_(rowAligned.rubric),
+          questionNumber: lookupQuestionInBank_(questionBank, questionId)
+            ? lookupQuestionInBank_(questionBank, questionId).questionNumber
+            : 999
+        };
+      }
+    }
+
+    items.push({
+      row: evalRow,
+      timestamp: rows[i][0] instanceof Date ? rows[i][0].toISOString() : rows[i][0],
+      studentName: cellText_(rows[i][1]),
+      answerText: cellText_(rows[i][2]),
+      rubricText: cellText_(rows[i][3]) || (details ? details.rubricText : ''),
+      evaluationText: evaluation,
+      questionId: questionId,
+      quizId: rowQuizId,
+      qPrompt: details ? details.questionText : '',
+      questionText: details ? details.questionText : '',
+      questionNumber: details ? details.questionNumber : 999
+    });
+  }
+
+  SpreadsheetApp.flush();
+
+  if (items.length === 0) {
+    throw new Error('No evaluations found for this quiz yet.');
+  }
+
+  items.sort(function(a, b) {
+    var nameCompare = String(a.studentName).localeCompare(String(b.studentName));
+    if (nameCompare !== 0) {
+      return nameCompare;
+    }
+    return a.questionNumber - b.questionNumber;
+  });
+
+  return items;
+}
+
+function updateEvaluation(row, evaluationText) {
+  row = Number(row);
+  if (!row || row < 2) {
+    throw new Error('Invalid evaluation row.');
+  }
+
+  evaluationText = String(evaluationText).trim();
+  if (!evaluationText) {
+    throw new Error('Evaluation cannot be empty.');
+  }
+
+  var ss = getQuizSpreadsheet_();
+  var evalSheet = ss.getSheetByName('Evaluations');
+  if (!evalSheet) {
+    throw new Error('Evaluations sheet not found.');
+  }
+
+  ensureEvaluationsHeaders_(evalSheet);
+  if (row > evalSheet.getLastRow()) {
+    throw new Error('Evaluation row not found.');
+  }
+
+  evalSheet.getRange('E' + row).setValue(evaluationText);
+  SpreadsheetApp.flush();
+  return 'Evaluation updated successfully.';
+}
+
+function getQuestionsForQuiz(quizId) {
+  quizId = String(quizId).trim();
+  if (!quizId) {
+    throw new Error('Quiz ID is required.');
+  }
+
+  var ss = getQuizSpreadsheet_();
+  var questionsSheet = ss.getSheetByName('Questions');
+  if (!questionsSheet) {
+    throw new Error('Questions sheet not found.');
+  }
+
+  ensureQuestionsHeaders_(questionsSheet);
+  ensureQuestionIds_(questionsSheet);
+
+  var lastRow = questionsSheet.getLastRow();
+  if (lastRow < 2) {
+    return [];
+  }
+
+  var rows = questionsSheet.getRange('A2:F' + lastRow).getValues();
+  var questions = [];
+
+  for (var i = 0; i < rows.length; i++) {
+    var sheetRow = rows[i][0] || (i + 2);
+    var question = rows[i][1];
+    var rowQuizId = String(rows[i][4]).trim();
+    var questionId = String(rows[i][5]).trim();
+
+    if (rowQuizId !== quizId || !question || !questionId) {
+      continue;
+    }
+
+    questions.push({
+      row: sheetRow,
+      questionId: questionId,
+      question: question,
+      number: questions.length + 1
+    });
+  }
+
+  if (questions.length === 0) {
+    throw new Error('No questions found for that quiz.');
+  }
+
+  return questions;
+}
+
+function submitQuiz(studentName, quizId, answers) {
+  studentName = String(studentName).trim();
+  quizId = String(quizId).trim();
+
+  if (!studentName) {
+    throw new Error('Student name is required.');
+  }
+  if (!quizId) {
+    throw new Error('Quiz ID is required.');
+  }
+  if (typeof answers === 'string') {
+    answers = JSON.parse(answers);
+  }
+  if (!answers || !answers.length) {
+    throw new Error('No answers to submit.');
+  }
+
+  var quizQuestions = getQuestionsForQuiz(quizId);
+  var expectedIds = {};
+  for (var i = 0; i < quizQuestions.length; i++) {
+    expectedIds[quizQuestions[i].questionId] = true;
+  }
+
+  var submittedIds = {};
+  for (var j = 0; j < answers.length; j++) {
+    var questionId = String(answers[j].questionId || '').trim();
+    var answer = String(answers[j].answer || '').trim();
+
+    if (!questionId || !expectedIds[questionId]) {
+      throw new Error('Invalid question in submission.');
+    }
+    if (!answer) {
+      throw new Error('Please answer all questions before submitting.');
+    }
+    if (submittedIds[questionId]) {
+      throw new Error('Duplicate answer for question ' + questionId + '.');
+    }
+    submittedIds[questionId] = true;
+  }
+
+  for (var expectedId in expectedIds) {
+    if (expectedIds.hasOwnProperty(expectedId) && !submittedIds[expectedId]) {
+      throw new Error('Please answer all questions before submitting.');
+    }
+  }
+
   var ss = getQuizSpreadsheet_();
   var sheet = ss.getSheetByName('Responses');
   if (!sheet) {
     sheet = ss.insertSheet('Responses');
   }
   ensureResponsesHeaders_(sheet);
-  sheet.appendRow([new Date(), studentName, answer, 'Pending']);
-  return 'Your answer has been submitted successfully!';
+
+  var timestamp = new Date();
+  for (var k = 0; k < answers.length; k++) {
+    sheet.appendRow([
+      timestamp,
+      studentName,
+      String(answers[k].answer).trim(),
+      'Pending',
+      String(answers[k].questionId).trim(),
+      quizId
+    ]);
+  }
+
+  SpreadsheetApp.flush();
+  return 'Quiz submitted successfully! ' + answers.length + ' answer(s) saved with Pending status.';
 }
 
-function triggerEvaluation() {
+function triggerEvaluation(quizId) {
   // Set ANTHROPIC_API_KEY in Apps Script: Project Settings > Script Properties.
+  quizId = quizId ? String(quizId).trim() : '';
   var anthropicApiKey = PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
   if (!anthropicApiKey) {
     throw new Error(
@@ -233,17 +996,23 @@ function triggerEvaluation() {
   ensureResponsesHeaders_(responsesSheet);
 
   var evalSheet = ensureSheet_(ss, 'Evaluations');
-  setupEvaluationsSheet_(evalSheet);
+  ensureEvaluationsHeaders_(evalSheet);
 
   var lastRow = responsesSheet.getLastRow();
   var count = 0;
 
   for (var responseRow = 2; responseRow <= lastRow; responseRow++) {
-    var rowData = responsesSheet.getRange('A' + responseRow + ':D' + responseRow).getValues()[0];
+    var rowData = responsesSheet.getRange('A' + responseRow + ':F' + responseRow).getValues()[0];
     var timestamp = rowData[0];
     var studentName = rowData[1];
     var answer = rowData[2];
     var status = rowData[3];
+    var questionId = String(rowData[4] || '').trim();
+    var rowQuizId = String(rowData[5] || '').trim();
+
+    if (quizId && rowQuizId !== quizId) {
+      continue;
+    }
 
     if (!isPendingStatus_(status)) {
       continue;
@@ -256,14 +1025,23 @@ function triggerEvaluation() {
     studentName = studentName || 'Unknown student';
     answer = answer || '(no answer provided)';
 
-    var qr = getQuestionAndRubricForRow_(questionsSheet, responseRow);
-    var question = qr.question;
-    var rubric = qr.rubric;
+    var qr;
+    if (questionId) {
+      qr = getQuestionAndRubricByQuestionId_(questionsSheet, questionId, rowQuizId);
+    } else {
+      qr = getQuestionAndRubricForRow_(questionsSheet, responseRow);
+    }
+
+    var question = qr.question || qr.questionText;
+    var rubric = qr.rubric || qr.rubricText;
     var evaluationText;
     var newStatus;
 
     if (!question && !rubric) {
-      evaluationText = 'Skipped: no question or rubric found in Questions row ' + responseRow + ' (columns B and C).';
+      var lookupHint = questionId
+        ? 'question ID ' + questionId + (rowQuizId ? ' in quiz ' + rowQuizId : '')
+        : 'Questions row ' + responseRow + ' (columns B and C)';
+      evaluationText = 'Skipped: no question or rubric found for ' + lookupHint + '.';
       newStatus = 'Error';
     } else {
       var userMessage = [
@@ -315,8 +1093,15 @@ function triggerEvaluation() {
       }
     }
 
-    evalSheet.getRange('A' + responseRow + ':D' + responseRow).setValues([[timestamp, studentName, answer, rubric]]);
-    evalSheet.getRange('E' + responseRow).setValue(evaluationText);
+    evalSheet.getRange('A' + responseRow + ':G' + responseRow).setValues([[
+      timestamp,
+      studentName,
+      answer,
+      rubric,
+      evaluationText,
+      questionId,
+      rowQuizId
+    ]]);
     responsesSheet.getRange('D' + responseRow).setValue(newStatus);
     count++;
   }
@@ -324,7 +1109,14 @@ function triggerEvaluation() {
   SpreadsheetApp.flush();
 
   if (count === 0) {
+    if (quizId) {
+      throw new Error('No Pending responses found to evaluate for this quiz.');
+    }
     throw new Error('No Pending responses found to evaluate.');
+  }
+
+  if (quizId) {
+    return 'AI evaluation completed for ' + count + ' Pending response(s) in this quiz. Check the Evaluations tab.';
   }
 
   return 'AI evaluation completed for ' + count + ' Pending response(s). Check the Evaluations tab.';
@@ -339,7 +1131,7 @@ function debugQuizState() {
     spreadsheetId: ss.getId(),
     spreadsheetName: ss.getName(),
     responseCount: responsesSheet ? Math.max(responsesSheet.getLastRow() - 1, 0) : 0,
-    responses: responsesSheet ? responsesSheet.getRange('A1:D' + responsesSheet.getLastRow()).getValues() : [],
+    responses: responsesSheet ? responsesSheet.getRange('A1:F' + responsesSheet.getLastRow()).getValues() : [],
     evaluationsHasHeaders: evalSheet ? evalSheet.getRange('A1').getValue() : null,
     evaluationCount: evalSheet ? Math.max(evalSheet.getLastRow() - 1, 0) : 0
   };

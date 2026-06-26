@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        color: #202124;
+        line-height: 1.5;
+        padding: 16px;
+      }
+
+      label {
+        display: block;
+        font-size: 14px;
+        font-weight: 500;
+        margin-bottom: 6px;
+      }
+
+      .field-hint {
+        color: #5f6368;
+        font-size: 12px;
+        font-weight: 400;
+        margin-bottom: 6px;
+      }
+
+      input[type="text"],
+      textarea {
+        width: 100%;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+        font-family: inherit;
+        font-size: 14px;
+        padding: 10px 12px;
+        margin-bottom: 16px;
+      }
+
+      input[type="text"]:focus,
+      textarea:focus {
+        border-color: #1a73e8;
+        outline: none;
+      }
+
+      textarea {
+        min-height: 100px;
+        resize: vertical;
+      }
+
+      button {
+        background: #1a73e8;
+        color: #fff;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 500;
+        padding: 10px 24px;
+      }
+
+      button:hover {
+        background: #1557b0;
+      }
+
+      button:disabled {
+        background: #a8c7fa;
+        cursor: not-allowed;
+      }
+
+      .message {
+        margin-top: 12px;
+        font-size: 14px;
+        padding: 12px;
+        border-radius: 4px;
+        display: none;
+      }
+
+      .message.success {
+        background: #e6f4ea;
+        color: #137333;
+        display: block;
+      }
+
+      .message.error {
+        background: #fce8e6;
+        color: #c5221f;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <form id="addForm" onsubmit="handleAddQuestion(event)">
+      <label for="quizName">Quiz Name</label>
+      <p class="field-hint">Reuse the same name to add another question to an existing quiz.</p>
+      <input type="text" id="quizName" required placeholder="e.g. Genetics Unit Quiz">
+
+      <label for="newQuestion">Question</label>
+      <textarea id="newQuestion" required placeholder="Enter the question..."></textarea>
+
+      <label for="newRubric">Rubric</label>
+      <textarea id="newRubric" required placeholder="Describe how answers should be scored..."></textarea>
+
+      <button type="submit" id="addBtn">Save Question</button>
+    </form>
+    <div class="message" id="message"></div>
+
+    <script>
+      function handleAddQuestion(event) {
+        event.preventDefault();
+
+        var quizName = document.getElementById('quizName').value.trim();
+        var question = document.getElementById('newQuestion').value.trim();
+        var rubric = document.getElementById('newRubric').value.trim();
+        var btn = document.getElementById('addBtn');
+        var message = document.getElementById('message');
+
+        if (!quizName || !question || !rubric) {
+          message.textContent = 'Quiz name, question, and rubric are all required.';
+          message.className = 'message error';
+          return;
+        }
+
+        btn.disabled = true;
+        message.className = 'message';
+        message.style.display = 'none';
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            btn.disabled = false;
+            document.getElementById('addForm').reset();
+            message.textContent = result.message;
+            message.className = 'message success';
+          })
+          .withFailureHandler(function(err) {
+            btn.disabled = false;
+            message.textContent = err.message || String(err);
+            message.className = 'message error';
+          })
+          .addQuestionAndRubric(quizName, question, rubric);
+      }
+    </script>
+  </body>
+</html>

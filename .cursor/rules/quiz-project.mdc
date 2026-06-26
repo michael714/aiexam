@@ -5,51 +5,67 @@ alwaysApply: true
 
 # Quiz Prototype Project
 
-Container-bound Google Apps Script + clasp project for a teacher/student quiz with Anthropic-powered grading.
+Container-bound Google Apps Script + clasp project for a teacher/student multi-question quiz with Anthropic-powered grading.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `Code.gs` | Server logic: `doGet`, `getQuestion`, `submitAnswer`, `triggerEvaluation`, setup |
-| `teacher.html` | Teacher dashboard — shows question, runs evaluation |
-| `student.html` | Student form — name, answer, submit |
+| `Code.gs` | Server logic: routing, quiz CRUD, student submit, AI evaluation, review |
+| `teacher.html` | Teacher dashboard — **Add Question**, **Evaluate**, **Review** (`?teach`) |
+| `add-question.html` | Spreadsheet modal for **Quiz → Add Question and Rubric** |
+| `student.html` | Quiz picker, one-question-at-a-time UI, submit full quiz |
 | `appsscript.json` | V8 runtime, OAuth scopes, web app config |
 | `.clasp.json` | Script/spreadsheet IDs for `clasp push` |
 | `setup.sh` | Push code + attempt remote `setupSheet` |
 
 ## Spreadsheet tabs
 
-- **Questions** — column B = question, column C = rubric; **row N matches Responses row N**
-- **Responses** — row 1 headers; data from row 2: Timestamp, Student Name, Answer, Status
-- **Evaluations** — same row numbers as Responses; column E = AI feedback
+- **Questions** — A = row, B = question, C = rubric, D = quiz name, E = quiz ID, F = question ID
+- **Responses** — A = timestamp, B = name, C = answer, D = status, E = question ID, F = quiz ID (one row per answer)
+- **Evaluations** — A = timestamp, B = name, C = answer, D = rubric, E = AI feedback, F = question ID, G = quiz ID
 
-## Row alignment workflow
+Questions in the same quiz share **quiz name** (D) and **quiz ID** (E). Each question row has its own **question ID** (F). IDs are random 8-character strings (no ambiguous chars).
 
-1. Put question + rubric in **Questions** row N (columns B and C).
-2. Student answer lands in **Responses** row N with Status **Pending**.
-3. **Run AI Evaluation** grades only Pending rows, using Questions row N for that response.
-4. On success, Status → **Complete**; on API/missing-rubric failure → **Error** (reset to Pending to retry).
-5. Rows already **Complete** are skipped on later runs.
+## IDs and linking
 
-The student page shows the question from the **next** response row (`getNextResponseRow_`), so the live question should be in the row where the next submission will land.
+- Do **not** rely on row numbers to match Questions ↔ Responses ↔ Evaluations.
+- Link by **question ID** (+ **quiz ID** when the same question could appear in multiple quizzes).
+- `ensureQuestionIds_(questionsSheet)` backfills empty Question ID cells in column F when students or teachers load quiz data.
+
+## Teacher workflow
+
+1. **Add Question** (`?teach` or spreadsheet menu) — quiz name, question, rubric; reusing a quiz name reuses its quiz ID.
+2. **Evaluate** — pick a quiz; grades all **Pending** responses for that quiz via Anthropic API.
+3. **Review** — pick a quiz; browse evaluations one at a time; optionally **Edit Evaluation** and submit changes to the Evaluations sheet.
+
+Spreadsheet menu **Quiz → Run AI Evaluation** grades **all** pending responses (all quizzes).
+
+## Student workflow
+
+1. Open deployment URL (no query string).
+2. Enter name, pick a quiz.
+3. Answer questions one at a time (Previous / Next).
+4. **Submit Quiz** — one Responses row per answer, Status **Pending**.
 
 ## URLs
 
-- Teacher: web app URL (default `doGet`)
-- Student: same URL + `?page=student`
+- Student: web app URL (default `doGet`)
+- Teacher: same URL + `?teach`
 
 ## Deployment checklist
 
 1. `clasp push --force` after code changes
-2. **Deploy → Manage deployments → New version** (web app does not auto-update)
+2. **Deploy → Manage deployments** → pencil on existing deployment → **New version** → Deploy (same URL; do not use **New deployment** unless you want a second URL)
 3. `ANTHROPIC_API_KEY` in Script Properties (not in source code)
 4. Run **Quiz → Authorize API access** once for `UrlFetchApp` permission
 5. Web app: Execute as **Me**, access **Anyone**
 
+Anthropic API calls run on **Google's servers**, not the school network. Teachers can collect Responses at school and run evaluation from home.
+
 ## Grading
 
-Uses Anthropic Messages API (`claude-haiku-4-5-20251001`) via `UrlFetchApp` in `triggerEvaluation()`. School Google accounts may lack Sheets `=AI()` — do not use sheet formulas for grading.
+Uses Anthropic Messages API (`claude-haiku-4-5-20251001`) via `UrlFetchApp` in `triggerEvaluation(quizId)`. School Google accounts may lack Sheets `=AI()` — do not use sheet formulas for grading.
 
 ## Question content (for demos)
 
@@ -59,4 +75,5 @@ Uses Anthropic Messages API (`claude-haiku-4-5-20251001`) via `UrlFetchApp` in `
 
 ## Roadmap
 
-- **Next planned content area:** statistics questions (not started — no code changes yet).
+- **Next planned content area:** statistics questions (content only — no code started).
+- **Future teacher features:** create/copy/archive/delete quiz (not implemented).
