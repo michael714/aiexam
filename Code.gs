@@ -75,7 +75,7 @@ function setupSheet(spreadsheetId) {
 
   removeDefaultSheet_(ss);
 
-  return 'Sheet setup complete. Edit the question in Questions!B2 and the rubric in Questions!C2.';
+  return 'Sheet setup complete. Add one question and rubric per row in Questions (columns B and C); row numbers match Responses.';
 }
 
 function ensureSheet_(ss, name) {
@@ -94,17 +94,16 @@ function setColumnWidths_(sheet, widths) {
 
 function setupQuestionsSheet_(sheet) {
   sheet.clear();
-  sheet.getRange('A1:C1').setValues([['Field', 'Question', 'Rubric']]);
-  sheet.getRange('A2:A3').setValues([['Prompt'], ['Sample']]);
+  sheet.getRange('A1:C1').setValues([['Row', 'Question', 'Rubric']]);
+  sheet.getRange('A2').setValue(2);
   sheet.getRange('B2').setValue('What is the capital of France?');
   sheet.getRange('C2').setValue(
     'Award full credit for "Paris". Partial credit for mentioning France. ' +
     'Deduct points for incorrect capitals.'
   );
-  setColumnWidths_(sheet, [100, 360, 360]);
+  setColumnWidths_(sheet, [60, 360, 360]);
   sheet.setFrozenRows(1);
   formatHeaderRow_(sheet, 1, 3);
-  sheet.getRange('A1').setFontWeight('bold');
 }
 
 function setupResponsesSheet_(sheet) {
@@ -129,16 +128,17 @@ function setupInstructionsSheet_(ss) {
 
   sheet.clear();
   sheet.getRange('A1').setValue('Quiz Prototype Setup').setFontSize(14).setFontWeight('bold').setFontColor('#1a73e8');
-  sheet.getRange('A3:A8').setValues([
-    ['1. Edit your question in the Questions tab (cell B2).'],
-    ['2. Edit your grading rubric in the Questions tab (cell C2).'],
+  sheet.getRange('A3:A9').setValues([
+    ['1. Add each question in Questions column B and its rubric in column C.'],
+    ['2. Use the same row number as the matching response (row 2 with row 2, etc.).'],
     ['3. Deploy the script as a web app (Deploy > New deployment > Web app).'],
     ['4. Share the student URL: <web app url>?page=student'],
     ['5. Open the teacher URL (web app url without parameters) to run evaluations.'],
-    ['6. Student answers appear on the Responses tab after submission.']
+    ['6. Student answers appear on the Responses tab with Status = Pending.'],
+    ['7. Run AI Evaluation to grade Pending rows; Status becomes Complete when done.']
   ]);
   sheet.setColumnWidth(1, 640);
-  sheet.getRange('A3:A8').setWrap(true);
+  sheet.getRange('A3:A9').setWrap(true);
 }
 
 function formatHeaderRow_(sheet, row, numColumns) {
@@ -168,12 +168,35 @@ function doGet(e) {
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
-function getQuestion() {
-  var sheet = getQuizSpreadsheet_().getSheetByName('Questions');
-  if (!sheet) {
+function getNextResponseRow_(responsesSheet) {
+  ensureResponsesHeaders_(responsesSheet);
+  var lastRow = responsesSheet.getLastRow();
+  return lastRow < 2 ? 2 : lastRow + 1;
+}
+
+function getQuestionAndRubricForRow_(questionsSheet, row) {
+  if (!questionsSheet) {
     throw new Error('Questions sheet not found.');
   }
-  return sheet.getRange('B2').getValue();
+  return {
+    question: questionsSheet.getRange('B' + row).getValue(),
+    rubric: questionsSheet.getRange('C' + row).getValue()
+  };
+}
+
+function isPendingStatus_(status) {
+  return String(status).trim().toLowerCase() === 'pending';
+}
+
+function getQuestion() {
+  var ss = getQuizSpreadsheet_();
+  var questionsSheet = ss.getSheetByName('Questions');
+  if (!questionsSheet) {
+    throw new Error('Questions sheet not found.');
+  }
+  var responsesSheet = ss.getSheetByName('Responses');
+  var row = responsesSheet ? getNextResponseRow_(responsesSheet) : 2;
+  return getQuestionAndRubricForRow_(questionsSheet, row).question;
 }
 
 function submitAnswer(studentName, answer) {
@@ -203,30 +226,28 @@ function triggerEvaluation() {
   if (!questionsSheet) {
     throw new Error('Questions sheet not found.');
   }
-  if (!responsesSheet || responsesSheet.getLastRow() < 1) {
+  if (!responsesSheet || responsesSheet.getLastRow() < 2) {
     throw new Error('No responses found to evaluate. Submit an answer from the student page first.');
   }
 
   ensureResponsesHeaders_(responsesSheet);
 
-  if (responsesSheet.getLastRow() < 2) {
-    throw new Error('No responses found to evaluate. Submit an answer from the student page first.');
-  }
-
-  var question = questionsSheet.getRange('B2').getValue();
-  var rubric = questionsSheet.getRange('C2').getValue();
-
   var evalSheet = ensureSheet_(ss, 'Evaluations');
   setupEvaluationsSheet_(evalSheet);
 
   var lastRow = responsesSheet.getLastRow();
-  var responses = responsesSheet.getRange('A2:D' + lastRow).getValues();
   var count = 0;
 
-  for (var i = 0; i < responses.length; i++) {
-    var timestamp = responses[i][0];
-    var studentName = responses[i][1];
-    var answer = responses[i][2];
+  for (var responseRow = 2; responseRow <= lastRow; responseRow++) {
+    var rowData = responsesSheet.getRange('A' + responseRow + ':D' + responseRow).getValues()[0];
+    var timestamp = rowData[0];
+    var studentName = rowData[1];
+    var answer = rowData[2];
+    var status = rowData[3];
+
+    if (!isPendingStatus_(status)) {
+      continue;
+    }
 
     if (!studentName && !answer) {
       continue;
@@ -235,65 +256,78 @@ function triggerEvaluation() {
     studentName = studentName || 'Unknown student';
     answer = answer || '(no answer provided)';
 
-    var userMessage = [
-      'You are grading a student quiz answer.',
-      'Question: ' + question,
-      'Rubric: ' + rubric,
-      'Student answer: ' + answer,
-      'Score the answer out of 10 and provide brief feedback.'
-    ].join('\n');
-
-    var payload = {
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 300,
-      messages: [
-        {
-          role: 'user',
-          content: userMessage
-        }
-      ]
-    };
-
-    var response = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
-      method: 'post',
-      headers: {
-        'x-api-key': anthropicApiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json'
-      },
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    });
-
-    var responseBody = response.getContentText();
-    var evalRow = i + 2;
+    var qr = getQuestionAndRubricForRow_(questionsSheet, responseRow);
+    var question = qr.question;
+    var rubric = qr.rubric;
     var evaluationText;
+    var newStatus;
 
-    try {
-      var responseData = JSON.parse(responseBody);
-      if (response.getResponseCode() !== 200) {
-        evaluationText = 'API error: ' + (responseData.error && responseData.error.message
-          ? responseData.error.message
-          : responseBody);
-      } else {
-        evaluationText = responseData.content[0].text;
+    if (!question && !rubric) {
+      evaluationText = 'Skipped: no question or rubric found in Questions row ' + responseRow + ' (columns B and C).';
+      newStatus = 'Error';
+    } else {
+      var userMessage = [
+        'You are grading a student quiz answer.',
+        'Question: ' + question,
+        'Rubric: ' + rubric,
+        'Student answer: ' + answer,
+        'Score the answer out of 10 and provide brief feedback.'
+      ].join('\n');
+
+      var payload = {
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        messages: [
+          {
+            role: 'user',
+            content: userMessage
+          }
+        ]
+      };
+
+      var response = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
+        method: 'post',
+        headers: {
+          'x-api-key': anthropicApiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json'
+        },
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true
+      });
+
+      var responseBody = response.getContentText();
+
+      try {
+        var responseData = JSON.parse(responseBody);
+        if (response.getResponseCode() !== 200) {
+          evaluationText = 'API error: ' + (responseData.error && responseData.error.message
+            ? responseData.error.message
+            : responseBody);
+          newStatus = 'Error';
+        } else {
+          evaluationText = responseData.content[0].text;
+          newStatus = 'Complete';
+        }
+      } catch (parseError) {
+        evaluationText = 'API error: ' + responseBody;
+        newStatus = 'Error';
       }
-    } catch (parseError) {
-      evaluationText = 'API error: ' + responseBody;
     }
 
-    evalSheet.getRange('A' + evalRow + ':D' + evalRow).setValues([[timestamp, studentName, answer, rubric]]);
-    evalSheet.getRange('E' + evalRow).setValue(evaluationText);
+    evalSheet.getRange('A' + responseRow + ':D' + responseRow).setValues([[timestamp, studentName, answer, rubric]]);
+    evalSheet.getRange('E' + responseRow).setValue(evaluationText);
+    responsesSheet.getRange('D' + responseRow).setValue(newStatus);
     count++;
   }
 
   SpreadsheetApp.flush();
 
   if (count === 0) {
-    throw new Error('No responses found to evaluate.');
+    throw new Error('No Pending responses found to evaluate.');
   }
 
-  return 'AI evaluation completed for ' + count + ' response(s). Check the Evaluations tab.';
+  return 'AI evaluation completed for ' + count + ' Pending response(s). Check the Evaluations tab.';
 }
 
 function debugQuizState() {

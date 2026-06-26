@@ -12,6 +12,18 @@ alwaysApply: false
 - Private helpers: suffix with `_` (e.g. `getQuizSpreadsheet_`, `ensureResponsesHeaders_`)
 - Use `getQuizSpreadsheet_()` for all spreadsheet access (works in editor, menu, and web app)
 
+## Row-aligned question/rubric (do not regress)
+
+Evaluation is **per response row**, not hardcoded to row 2:
+
+- `getNextResponseRow_(responsesSheet)` — row where the next student submission will go
+- `getQuestionAndRubricForRow_(questionsSheet, row)` — reads Questions `B{row}` and `C{row}`
+- `isPendingStatus_(status)` — true only for `"Pending"` (case-insensitive)
+- `getQuestion()` — returns question for the next response row
+- `triggerEvaluation()` — loops response rows 2..lastRow; skips non-Pending; writes Evaluations on the same row; sets Responses column D to Complete or Error
+
+Do **not** read a single global `B2`/`C2` for all evaluations.
+
 ## API key
 
 ```javascript
@@ -39,7 +51,7 @@ evalSheet.getRange('A2:D2').setValues([[a, b, c, d]]);
 ```
 
 - Responses **must** have headers in row 1; call `ensureResponsesHeaders_` before reading/writing responses
-- Read response data from `A2:D{lastRow}`, not row 1
+- Read/write each response row individually (`A{row}:D{row}`), not a single global question
 - Wrap `UrlFetchApp.fetch` + `JSON.parse` in try/catch; use `muteHttpExceptions: true`
 - Menu actions that need user feedback: wrap in alert helper (see `runEvaluationWithAlert`)
 

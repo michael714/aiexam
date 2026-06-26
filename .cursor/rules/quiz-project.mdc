@@ -10,7 +10,7 @@ Container-bound Google Apps Script + clasp project for a teacher/student quiz wi
 ## Files
 
 | File | Role |
-|------|------|
+|---|---|
 | `Code.gs` | Server logic: `doGet`, `getQuestion`, `submitAnswer`, `triggerEvaluation`, setup |
 | `teacher.html` | Teacher dashboard — shows question, runs evaluation |
 | `student.html` | Student form — name, answer, submit |
@@ -20,9 +20,19 @@ Container-bound Google Apps Script + clasp project for a teacher/student quiz wi
 
 ## Spreadsheet tabs
 
-- **Questions** — B2 = question, C2 = rubric
-- **Responses** — row 1 headers required; data from row 2 (Timestamp, Student Name, Answer, Status)
-- **Evaluations** — row 1 headers; graded rows align with Responses row numbers; column E = AI feedback
+- **Questions** — column B = question, column C = rubric; **row N matches Responses row N**
+- **Responses** — row 1 headers; data from row 2: Timestamp, Student Name, Answer, Status
+- **Evaluations** — same row numbers as Responses; column E = AI feedback
+
+## Row alignment workflow
+
+1. Put question + rubric in **Questions** row N (columns B and C).
+2. Student answer lands in **Responses** row N with Status **Pending**.
+3. **Run AI Evaluation** grades only Pending rows, using Questions row N for that response.
+4. On success, Status → **Complete**; on API/missing-rubric failure → **Error** (reset to Pending to retry).
+5. Rows already **Complete** are skipped on later runs.
+
+The student page shows the question from the **next** response row (`getNextResponseRow_`), so the live question should be in the row where the next submission will land.
 
 ## URLs
 
@@ -40,3 +50,13 @@ Container-bound Google Apps Script + clasp project for a teacher/student quiz wi
 ## Grading
 
 Uses Anthropic Messages API (`claude-haiku-4-5-20251001`) via `UrlFetchApp` in `triggerEvaluation()`. School Google accounts may lack Sheets `=AI()` — do not use sheet formulas for grading.
+
+## Question content (for demos)
+
+- Write question, rubric, and sample answers as **single paragraphs** (no line breaks) when pasting into sheet cells — line breaks spill into the next row.
+- Prefer rubrics with **explicit point buckets** and **named misconceptions** so partial credit is obvious in AI feedback.
+- Validated example: pea-plant genetics cross (Tt × tt) with a partially correct answer scored **6/10** as expected.
+
+## Roadmap
+
+- **Next planned content area:** statistics questions (not started — no code changes yet).

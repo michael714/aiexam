@@ -23,7 +23,11 @@ alwaysApply: false
 
 ## Pages
 
-- `teacher.html` — load question on DOMContentLoaded; "Run AI Evaluation" → `triggerEvaluation()`
-- `student.html` — load question; form submit → `submitAnswer(name, answer)`; validate name + answer client-side
+- `teacher.html` — load question on DOMContentLoaded via `getQuestion()`; **Run AI Evaluation** → `triggerEvaluation()` (grades Pending rows only)
+- `student.html` — load question via `getQuestion()` (next response row); form submit → `submitAnswer(name, answer)`; validate name + answer client-side
 
 Keep both pages visually consistent. Do not add dependencies.
+
+## Server coupling
+
+- `getQuestion()` reflects the question for the **next** submission row, not always row 2 — UI copy should not imply a single fixed question slot.
