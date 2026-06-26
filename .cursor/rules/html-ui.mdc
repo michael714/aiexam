@@ -1,0 +1,29 @@
+---
+description: HTML UI conventions for teacher and student pages
+globs: "**/*.html"
+alwaysApply: false
+---
+
+# Quiz HTML UI
+
+## Constraints
+
+- No external libraries or frameworks
+- Call server via `google.script.run.withSuccessHandler(...).withFailureHandler(...).functionName()`
+- Include `<base target="_top">` in `<head>`
+
+## Design system
+
+- Primary blue: `#1a73e8` (buttons, headings, accents)
+- Hover: `#1557b0`
+- Background: `#f8f9fa`; cards: white with light shadow
+- Question box: `#e8f0fe` background, 4px left border `#1a73e8`
+- Success message: `#e6f4ea` / `#137333`; error: `#fce8e6` / `#c5221f`
+- Font stack: `-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif`
+
+## Pages
+
+- `teacher.html` — load question on DOMContentLoaded; "Run AI Evaluation" → `triggerEvaluation()`
+- `student.html` — load question; form submit → `submitAnswer(name, answer)`; validate name + answer client-side
+
+Keep both pages visually consistent. Do not add dependencies.

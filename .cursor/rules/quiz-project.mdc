@@ -1,0 +1,42 @@
+---
+description: Google Apps Script quiz prototype — architecture, sheets, and deployment
+alwaysApply: true
+---
+
+# Quiz Prototype Project
+
+Container-bound Google Apps Script + clasp project for a teacher/student quiz with Anthropic-powered grading.
+
+## Files
+
+| File | Role |
+|------|------|
+| `Code.gs` | Server logic: `doGet`, `getQuestion`, `submitAnswer`, `triggerEvaluation`, setup |
+| `teacher.html` | Teacher dashboard — shows question, runs evaluation |
+| `student.html` | Student form — name, answer, submit |
+| `appsscript.json` | V8 runtime, OAuth scopes, web app config |
+| `.clasp.json` | Script/spreadsheet IDs for `clasp push` |
+| `setup.sh` | Push code + attempt remote `setupSheet` |
+
+## Spreadsheet tabs
+
+- **Questions** — B2 = question, C2 = rubric
+- **Responses** — row 1 headers required; data from row 2 (Timestamp, Student Name, Answer, Status)
+- **Evaluations** — row 1 headers; graded rows align with Responses row numbers; column E = AI feedback
+
+## URLs
+
+- Teacher: web app URL (default `doGet`)
+- Student: same URL + `?page=student`
+
+## Deployment checklist
+
+1. `clasp push --force` after code changes
+2. **Deploy → Manage deployments → New version** (web app does not auto-update)
+3. `ANTHROPIC_API_KEY` in Script Properties (not in source code)
+4. Run **Quiz → Authorize API access** once for `UrlFetchApp` permission
+5. Web app: Execute as **Me**, access **Anyone**
+
+## Grading
+
+Uses Anthropic Messages API (`claude-haiku-4-5-20251001`) via `UrlFetchApp` in `triggerEvaluation()`. School Google accounts may lack Sheets `=AI()` — do not use sheet formulas for grading.

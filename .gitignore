@@ -1,0 +1,8 @@
+# macOS
+.DS_Store
+
+# clasp OAuth credentials (never commit)
+.clasprc.json
+
+# Node (if added later)
+node_modules/

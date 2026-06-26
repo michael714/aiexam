@@ -1,0 +1,48 @@
+---
+description: Apps Script conventions and pitfalls for Code.gs
+globs: Code.gs,appsscript.json
+alwaysApply: false
+---
+
+# Apps Script Conventions
+
+## Style
+
+- ES5-compatible syntax (`var`, no arrow functions) — standard for `.gs` files
+- Private helpers: suffix with `_` (e.g. `getQuizSpreadsheet_`, `ensureResponsesHeaders_`)
+- Use `getQuizSpreadsheet_()` for all spreadsheet access (works in editor, menu, and web app)
+
+## API key
+
+```javascript
+var key = PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
+```
+
+Never commit API keys. Document Script Properties setup in comments near `triggerEvaluation`.
+
+## Common pitfalls (avoid regressions)
+
+```javascript
+// ❌ setColumnWidths does NOT accept an array — use setColumnWidth per column
+sheet.setColumnWidths(1, 5, [160, 160, 300, 300, 400]);
+
+// ✅
+for (var i = 0; i < widths.length; i++) {
+  sheet.setColumnWidth(i + 1, widths[i]);
+}
+
+// ❌ 4-arg getRange(row, col, row, col) is (startRow, startCol, numRows, numCols)
+evalSheet.getRange(2, 1, 2, 4); // selects 2 rows!
+
+// ✅ use A1 notation
+evalSheet.getRange('A2:D2').setValues([[a, b, c, d]]);
+```
+
+- Responses **must** have headers in row 1; call `ensureResponsesHeaders_` before reading/writing responses
+- Read response data from `A2:D{lastRow}`, not row 1
+- Wrap `UrlFetchApp.fetch` + `JSON.parse` in try/catch; use `muteHttpExceptions: true`
+- Menu actions that need user feedback: wrap in alert helper (see `runEvaluationWithAlert`)
+
+## OAuth scopes (appsscript.json)
+
+Required: `spreadsheets.currentonly`, `script.external_request`
