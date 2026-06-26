@@ -11,6 +11,7 @@ alwaysApply: false
 - No external libraries or frameworks
 - Call server via `google.script.run.withSuccessHandler(...).withFailureHandler(...).functionName()`
 - Include `<base target="_top">` in `<head>`
+- Pass structured payloads as **one object** to `google.script.run` when sending large or many fields (e.g. `addQuestionAndRubric({ quizName, question, rubric })`)
 
 ## Design system
 
@@ -26,31 +27,53 @@ alwaysApply: false
 
 Nav order: **Add Question** | **Evaluate** | **Review**
 
-- **Add Question** → `addQuestionAndRubric(quizName, question, rubric)`
-- **Evaluate** → `getQuizEvaluationList()`, per-quiz **Evaluate** button → `triggerEvaluation(quizId)`
+- **Add Question** — form fields + optional PNG/GIF file picker (max 1 MB); preview + **Remove image**
+  - Save: `addQuestionAndRubric({ quizName, question, rubric })`, then chunked `uploadQuestionImage(row, questionId, quizId, imageData, ...)` if file selected
+  - Shared helpers: `readQuestionImageFile`, `uploadQuestionImage`, `logToSheet`
+- **Evaluate** → `getQuizEvaluationList()`, per-quiz **Evaluate** → `triggerEvaluation(quizId)`
 - **Review** → `getQuizReviewList()`, then `getEvaluationsForQuiz(quizId)`; Previous/Next; **Edit Evaluation** → `updateEvaluation(row, text)`
 
 Review detail layout (top to bottom):
 
-1. Question (readonly div)
+1. Question (readonly div) + optional image (`#reviewQuestionImage`)
 2. Student Answer (readonly div)
 3. Evaluation (textarea, ~336px min-height; editable in edit mode)
 4. Rubric (readonly div)
 
-Use `textContent` for readonly blocks; use `item.qPrompt || item.questionText` for question text.
+Use `textContent` for readonly blocks; use `item.qPrompt || item.questionText` for question text; `setQuestionImage(imgEl, item.imageData)` for images.
 
 ### `add-question.html`
 
-Same add form as teacher tab; used by spreadsheet modal **Quiz → Add Question and Rubric**.
+Same add form and image upload flow as teacher **Add Question** tab; spreadsheet modal **Quiz → Add Question and Rubric**.
 
 ### `student.html` (default `doGet`)
 
 1. Quiz list → `getQuizList()`
-2. One question at a time → `getQuestionsForQuiz(quizId)`; Previous/Next
+2. One question at a time → `getQuestionsForQuiz(quizId)` returns `questionText`, `hasImage`, `questionId`, `number`
 3. **Submit Quiz** → `submitQuiz(studentName, quizId, JSON.stringify(answers))`
+
+Per-question display (`#view-quiz`):
+
+- Progress: `#questionNumber` (e.g. "Question 1 of 3")
+- **Question:** label + `#studentQuestionText` in blue `.question-field` block
+- **Image:** label + `#questionImageBlock` / `#questionImage` (hidden when no image); load via `getQuestionImage` + `imageCache`
+
+State: `{ studentName, quizId, quizName, questions, currentIndex, answers, imageCache }`
+
+Do not use `id="questionText"` on student page (use `#studentQuestionText`).
 
 Keep all pages visually consistent. Do not add dependencies.
 
-## Server return fields (Review)
+## Server return fields
 
-Prefer explicit `*Text` suffixes for HTML display: `questionText`, `qPrompt`, `answerText`, `rubricText`, `evaluationText`.
+**Student `getQuestionsForQuiz`:** `questionId`, `questionText`, `hasImage`, `number`
+
+**Student `getQuestionImage`:** `imageData`, `hasImage`, `quizId`, `questionId`
+
+**Review:** `questionText`, `qPrompt`, `answerText`, `rubricText`, `evaluationText`, `imageData`
+
+## Image client limits
+
+- `MAX_QUESTION_IMAGE_BYTES = 1048576` (1 MB)
+- `IMAGE_UPLOAD_CHUNK_SIZE = 40000` for transport chunks
+- Accept only `.png`, `.gif` / `image/png`, `image/gif`

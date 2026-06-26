@@ -3,15 +3,22 @@ function onOpen() {
     .createMenu('Quiz')
     .addItem('Set up sheets', 'setupSheet')
     .addItem('Add Question and Rubric', 'showAddQuestionDialog')
+    .addItem('Open Logs', 'openLogsSheet')
     .addItem('Authorize API access (run once)', 'authorizeExternalRequests')
     .addItem('Run AI Evaluation', 'runEvaluationWithAlert')
     .addToUi();
 }
 
+function openLogsSheet() {
+  var ss = getQuizSpreadsheet_();
+  ensureLogsSheet_(ss);
+  ss.setActiveSheet(ss.getSheetByName('Logs'));
+}
+
 function showAddQuestionDialog() {
   var html = HtmlService.createHtmlOutputFromFile('add-question')
     .setWidth(520)
-    .setHeight(520);
+    .setHeight(600);
   SpreadsheetApp.getUi().showModalDialog(html, 'Add Question and Rubric');
 }
 
@@ -87,6 +94,8 @@ function setupSheet(spreadsheetId) {
   setupResponsesSheet_(responsesSheet);
   setupEvaluationsSheet_(evaluationsSheet);
   setupInstructionsSheet_(ss);
+  ensureLogsSheet_(ss);
+  ensureQuestionImagesSheet_(ss);
 
   removeDefaultSheet_(ss);
 
@@ -104,7 +113,10 @@ function ensureQuestionsHeaders_(sheet) {
     if (sheet.getRange('F1').getValue() !== 'Question ID') {
       sheet.getRange('F1').setValue('Question ID');
     }
-    formatHeaderRow_(sheet, 1, 6);
+    if (sheet.getRange('G1').getValue() !== 'Question Image') {
+      sheet.getRange('G1').setValue('Question Image');
+    }
+    formatHeaderRow_(sheet, 1, 7);
     return;
   }
   if (sheet.getLastRow() > 0) {
@@ -129,7 +141,7 @@ function setColumnWidths_(sheet, widths) {
 
 function setupQuestionsSheet_(sheet) {
   sheet.clear();
-  sheet.getRange('A1:F1').setValues([['Row', 'Question', 'Rubric', 'Quiz Name', 'Quiz ID', 'Question ID']]);
+  sheet.getRange('A1:G1').setValues([['Row', 'Question', 'Rubric', 'Quiz Name', 'Quiz ID', 'Question ID', 'Question Image']]);
   sheet.getRange('A2').setValue(2);
   sheet.getRange('B2').setValue('What is the capital of France?');
   sheet.getRange('C2').setValue(
@@ -139,9 +151,9 @@ function setupQuestionsSheet_(sheet) {
   sheet.getRange('D2').setValue('Sample Quiz');
   sheet.getRange('E2').setValue(generateShortId_());
   sheet.getRange('F2').setValue(generateShortId_());
-  setColumnWidths_(sheet, [60, 360, 360, 160, 100, 100]);
+  setColumnWidths_(sheet, [60, 360, 360, 160, 100, 100, 80]);
   sheet.setFrozenRows(1);
-  formatHeaderRow_(sheet, 1, 6);
+  formatHeaderRow_(sheet, 1, 7);
 }
 
 function setupResponsesSheet_(sheet) {
@@ -329,12 +341,18 @@ function getQuestionAndRubricForRow_(questionsSheet, row) {
   if (!questionsSheet) {
     throw new Error('Questions sheet not found.');
   }
+  var ss = questionsSheet.getParent();
+  var imageMap = buildQuestionImageMap_(ss);
+  var questionId = questionsSheet.getRange('F' + row).getValue();
+  var quizId = questionsSheet.getRange('E' + row).getValue();
+  var legacyImage = questionsSheet.getRange('G' + row).getValue();
   return {
     question: questionsSheet.getRange('B' + row).getValue(),
     rubric: questionsSheet.getRange('C' + row).getValue(),
     quizName: questionsSheet.getRange('D' + row).getValue(),
-    quizId: questionsSheet.getRange('E' + row).getValue(),
-    questionId: questionsSheet.getRange('F' + row).getValue()
+    quizId: quizId,
+    questionId: questionId,
+    imageData: readQuestionImageData_(imageMap, legacyImage, questionId, quizId)
   };
 }
 
@@ -353,7 +371,8 @@ function getQuestionAndRubricByQuestionId_(questionsSheet, questionId, quizId) {
     };
   }
 
-  var rows = questionsSheet.getRange('A2:F' + lastRow).getValues();
+  var rows = questionsSheet.getRange('A2:G' + lastRow).getValues();
+  var imageMap = buildQuestionImageMap_(questionsSheet.getParent());
   var fallback = null;
 
   for (var i = 0; i < rows.length; i++) {
@@ -364,6 +383,12 @@ function getQuestionAndRubricByQuestionId_(questionsSheet, questionId, quizId) {
     var entry = {
       questionText: cellText_(rows[i][1]),
       rubricText: cellText_(rows[i][2]),
+      imageData: readQuestionImageData_(
+        imageMap,
+        rows[i][6],
+        questionId,
+        normalizeSheetId_(rows[i][4])
+      ),
       quizName: cellText_(rows[i][3]),
       quizId: normalizeSheetId_(rows[i][4]),
       questionId: questionId
@@ -402,6 +427,497 @@ function cellText_(value) {
   return String(value);
 }
 
+function ensureLogsSheet_(ss) {
+  var sheet = ensureSheet_(ss, 'Logs');
+  if (sheet.getRange('A1').getValue() !== 'Timestamp') {
+    sheet.getRange('A1:E1').setValues([['Timestamp', 'Level', 'Source', 'Message', 'Details']]);
+    setColumnWidths_(sheet, [160, 80, 140, 280, 420]);
+    sheet.setFrozenRows(1);
+    formatHeaderRow_(sheet, 1, 5);
+  }
+  return sheet;
+}
+
+function logQuizEvent_(level, source, message, details) {
+  try {
+    var ss = getQuizSpreadsheet_();
+    var sheet = ensureLogsSheet_(ss);
+    var detailsText = '';
+    if (details != null) {
+      try {
+        detailsText = JSON.stringify(details);
+      } catch (jsonError) {
+        detailsText = String(details);
+      }
+    }
+    if (detailsText.length > 45000) {
+      detailsText = detailsText.substring(0, 45000) + '... (truncated)';
+    }
+    sheet.appendRow([
+      new Date(),
+      String(level || 'info'),
+      String(source || ''),
+      String(message || ''),
+      detailsText
+    ]);
+  } catch (logError) {
+    console.error(logError);
+  }
+}
+
+function logFromClient(level, source, message, detailsJson) {
+  var details = {};
+  if (detailsJson) {
+    try {
+      details = JSON.parse(detailsJson);
+    } catch (parseError) {
+      details = { raw: String(detailsJson) };
+    }
+  }
+  logQuizEvent_(level || 'info', source || 'client', message || '', details);
+  return { ok: true };
+}
+
+var MAX_QUESTION_IMAGE_BYTES_ = 1048576;
+var QUESTION_IMAGE_UPLOAD_CHUNK_SIZE_ = 40000;
+var QUESTION_IMAGE_UPLOAD_MAX_PARTS_ = 40;
+var QUESTION_IMAGE_STORAGE_CHUNK_SIZE_ = 49000;
+
+function ensureQuestionImagesSheet_(ss) {
+  var sheet = ensureSheet_(ss, 'QuestionImages');
+  if (sheet.getRange('A1').getValue() !== 'Question ID') {
+    sheet.getRange('A1:D1').setValues([['Question ID', 'Quiz ID', 'Part', 'Image Data']]);
+    setColumnWidths_(sheet, [100, 100, 60, 420]);
+    sheet.setFrozenRows(1);
+    formatHeaderRow_(sheet, 1, 4);
+  }
+  return sheet;
+}
+
+function questionImageStorageKey_(quizId, questionId) {
+  return normalizeSheetId_(quizId) + '|' + normalizeSheetId_(questionId);
+}
+
+function splitQuestionImageForStorage_(imageData) {
+  var chunks = [];
+  for (var i = 0; i < imageData.length; i += QUESTION_IMAGE_STORAGE_CHUNK_SIZE_) {
+    chunks.push(imageData.substring(i, i + QUESTION_IMAGE_STORAGE_CHUNK_SIZE_));
+  }
+  return chunks;
+}
+
+function deleteQuestionImageRows_(imageSheet, questionId, quizId) {
+  questionId = normalizeSheetId_(questionId);
+  quizId = normalizeSheetId_(quizId);
+  var lastRow = imageSheet.getLastRow();
+  if (lastRow < 2) {
+    return;
+  }
+
+  var rows = imageSheet.getRange('A2:B' + lastRow).getValues();
+  for (var i = rows.length - 1; i >= 0; i--) {
+    if (normalizeSheetId_(rows[i][0]) === questionId && normalizeSheetId_(rows[i][1]) === quizId) {
+      imageSheet.deleteRow(i + 2);
+    }
+  }
+}
+
+function buildQuestionImageMap_(ss) {
+  var map = {};
+  var sheet = ss.getSheetByName('QuestionImages');
+  if (!sheet) {
+    return map;
+  }
+
+  ensureQuestionImagesSheet_(ss);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    return map;
+  }
+
+  var rows = sheet.getRange('A2:D' + lastRow).getValues();
+  var grouped = {};
+
+  for (var i = 0; i < rows.length; i++) {
+    var questionId = normalizeSheetId_(rows[i][0]);
+    var quizId = normalizeSheetId_(rows[i][1]);
+    if (!questionId) {
+      continue;
+    }
+
+    var key = questionImageStorageKey_(quizId, questionId);
+    if (!grouped[key]) {
+      grouped[key] = [];
+    }
+    grouped[key].push({
+      part: Number(rows[i][2]) || 0,
+      data: cellText_(rows[i][3])
+    });
+  }
+
+  for (var storageKey in grouped) {
+    if (!grouped.hasOwnProperty(storageKey)) {
+      continue;
+    }
+    grouped[storageKey].sort(function(a, b) {
+      return a.part - b.part;
+    });
+    var joined = '';
+    for (var j = 0; j < grouped[storageKey].length; j++) {
+      joined += grouped[storageKey][j].data;
+    }
+    map[storageKey] = joined;
+  }
+
+  return map;
+}
+
+function readQuestionImageData_(imageMap, legacyCellValue, questionId, quizId) {
+  var key = questionImageStorageKey_(quizId, questionId);
+  if (imageMap && imageMap[key]) {
+    return imageMap[key];
+  }
+
+  var legacy = cellText_(legacyCellValue).trim();
+  if (legacy && /^data:image\//i.test(legacy)) {
+    return legacy;
+  }
+
+  return '';
+}
+
+function questionHasStoredImage_(imageMap, legacyCellValue, questionId, quizId) {
+  if (readQuestionImageData_(imageMap, legacyCellValue, questionId, quizId)) {
+    return true;
+  }
+  return /^PARTS:\d+$/i.test(cellText_(legacyCellValue).trim());
+}
+
+function lookupQuestionImageData_(quizId, questionId) {
+  quizId = normalizeSheetId_(quizId);
+  questionId = normalizeSheetId_(questionId);
+  if (!questionId) {
+    return '';
+  }
+
+  var ss = getQuizSpreadsheet_();
+  var imageMap = buildQuestionImageMap_(ss);
+  var questionsSheet = ss.getSheetByName('Questions');
+  var legacy = '';
+
+  if (questionsSheet) {
+    ensureQuestionsHeaders_(questionsSheet);
+    var lastRow = questionsSheet.getLastRow();
+    if (lastRow >= 2) {
+      var rows = questionsSheet.getRange('A2:G' + lastRow).getValues();
+      for (var i = 0; i < rows.length; i++) {
+        if (normalizeSheetId_(rows[i][5]) === questionId && normalizeSheetId_(rows[i][4]) === quizId) {
+          legacy = rows[i][6];
+          break;
+        }
+      }
+    }
+  }
+
+  return readQuestionImageData_(imageMap, legacy, questionId, quizId);
+}
+
+function getQuestionImage(quizId, questionId) {
+  quizId = normalizeSheetId_(quizId);
+  questionId = normalizeSheetId_(questionId);
+  if (!quizId || !questionId) {
+    throw new Error('Quiz ID and Question ID are required.');
+  }
+
+  var imageData = lookupQuestionImageData_(quizId, questionId);
+  return {
+    quizId: quizId,
+    questionId: questionId,
+    hasImage: !!imageData,
+    imageData: imageData || ''
+  };
+}
+
+function writeQuestionImageToSheet_(questionsSheet, row, questionId, quizId, imageData) {
+  questionId = normalizeSheetId_(questionId);
+  quizId = normalizeSheetId_(quizId);
+  if (!questionId) {
+    throw new Error('Question ID is required to store an image.');
+  }
+
+  var ss = questionsSheet.getParent();
+  var imageSheet = ensureQuestionImagesSheet_(ss);
+  deleteQuestionImageRows_(imageSheet, questionId, quizId);
+
+  var chunks = splitQuestionImageForStorage_(imageData);
+  if (chunks.length) {
+    var writeRows = [];
+    for (var i = 0; i < chunks.length; i++) {
+      writeRows.push([questionId, quizId, i, chunks[i]]);
+    }
+    var startRow = imageSheet.getLastRow() + 1;
+    var endRow = startRow + writeRows.length - 1;
+    imageSheet.getRange('A' + startRow + ':D' + endRow).setValues(writeRows);
+  }
+
+  questionsSheet.getRange(row, 7).setValue(chunks.length ? ('PARTS:' + chunks.length) : '');
+  SpreadsheetApp.flush();
+
+  var saved = readQuestionImageData_(buildQuestionImageMap_(ss), '', questionId, quizId);
+  logQuizEvent_('info', 'writeQuestionImageToSheet_', 'stored image', {
+    row: row,
+    questionId: questionId,
+    quizId: quizId,
+    partCount: chunks.length,
+    savedLength: saved.length,
+    expectedLength: imageData.length
+  });
+
+  if (saved.length !== imageData.length) {
+    throw new Error('Image could not be stored in the sheet. See the Logs tab for details.');
+  }
+
+  return { partCount: chunks.length, imageBytes: imageData.length };
+}
+
+function questionImageUploadKey_(row, suffix) {
+  return 'qi_' + row + '_' + suffix;
+}
+
+function clearQuestionImageUpload_(row) {
+  var cache = CacheService.getScriptCache();
+  var metaJson = cache.get(questionImageUploadKey_(row, 'meta'));
+  var partCount = 0;
+  if (metaJson) {
+    try {
+      partCount = JSON.parse(metaJson).partCount || 0;
+    } catch (e) {
+      partCount = 0;
+    }
+  }
+  cache.remove(questionImageUploadKey_(row, 'meta'));
+  for (var i = 0; i < QUESTION_IMAGE_UPLOAD_MAX_PARTS_; i++) {
+    cache.remove(questionImageUploadKey_(row, 'part_' + i));
+  }
+}
+
+function prepareQuestionImageData_(base64Image) {
+  if (!base64Image || typeof base64Image !== 'string') {
+    logQuizEvent_('warn', 'prepareQuestionImageData_', 'missing or non-string image payload', {
+      type: typeof base64Image,
+      length: base64Image ? String(base64Image).length : 0
+    });
+    return '';
+  }
+
+  var photoData = base64Image.trim().replace(/\s+/g, '');
+  if (!photoData) {
+    logQuizEvent_('warn', 'prepareQuestionImageData_', 'empty image payload after trim');
+    return '';
+  }
+  if (!photoData.startsWith('data:image')) {
+    logQuizEvent_('error', 'prepareQuestionImageData_', 'invalid image prefix', {
+      prefix: photoData.substring(0, 32)
+    });
+    throw new Error('Question image must be a PNG or GIF file.');
+  }
+  if (!/^data:image\/(png|gif);base64,/i.test(photoData)) {
+    logQuizEvent_('error', 'prepareQuestionImageData_', 'unsupported image type', {
+      prefix: photoData.substring(0, 32)
+    });
+    throw new Error('Question image must be a PNG or GIF file.');
+  }
+
+  var commaIndex = photoData.indexOf(',');
+  if (commaIndex < 1) {
+    throw new Error('Question image must be a PNG or GIF file.');
+  }
+
+  var base64 = photoData.substring(commaIndex + 1);
+  if (!base64) {
+    throw new Error('Question image must be a PNG or GIF file.');
+  }
+
+  var approxBytes = Math.floor(base64.length * 3 / 4);
+  if (approxBytes > MAX_QUESTION_IMAGE_BYTES_) {
+    throw new Error('Question image must be 1 MB or smaller.');
+  }
+
+  return photoData;
+}
+
+function beginQuestionImageUpload(row, partCount, totalLength, questionId, quizId) {
+  row = Number(row);
+  partCount = Number(partCount);
+  totalLength = Number(totalLength);
+  questionId = normalizeSheetId_(questionId);
+  quizId = normalizeSheetId_(quizId);
+
+  logQuizEvent_('info', 'beginQuestionImageUpload', 'starting upload', {
+    row: row,
+    partCount: partCount,
+    totalLength: totalLength,
+    questionId: questionId,
+    quizId: quizId
+  });
+
+  if (!row || row < 2) {
+    throw new Error('Invalid question row.');
+  }
+  if (!partCount || partCount < 1) {
+    throw new Error('Image upload is missing data parts.');
+  }
+  if (partCount > QUESTION_IMAGE_UPLOAD_MAX_PARTS_) {
+    throw new Error('Image is too large to upload.');
+  }
+
+  clearQuestionImageUpload_(row);
+  CacheService.getScriptCache().put(
+    questionImageUploadKey_(row, 'meta'),
+    JSON.stringify({
+      partCount: partCount,
+      totalLength: totalLength,
+      questionId: questionId,
+      quizId: quizId
+    }),
+    600
+  );
+
+  return { ok: true, row: row, partCount: partCount };
+}
+
+function uploadQuestionImagePart(row, partIndex, partData) {
+  row = Number(row);
+  partIndex = Number(partIndex);
+
+  logQuizEvent_('info', 'uploadQuestionImagePart', 'received part', {
+    row: row,
+    partIndex: partIndex,
+    partLength: partData ? String(partData).length : 0
+  });
+
+  if (!row || row < 2) {
+    throw new Error('Invalid question row.');
+  }
+  if (!partData || typeof partData !== 'string' || !partData.length) {
+    logQuizEvent_('error', 'uploadQuestionImagePart', 'missing part payload', {
+      row: row,
+      partIndex: partIndex
+    });
+    throw new Error('Image part ' + partIndex + ' did not reach the server.');
+  }
+
+  var cache = CacheService.getScriptCache();
+  var metaJson = cache.get(questionImageUploadKey_(row, 'meta'));
+  if (!metaJson) {
+    throw new Error('Image upload session expired. Save the question again.');
+  }
+
+  cache.put(questionImageUploadKey_(row, 'part_' + partIndex), partData, 600);
+  return { ok: true, row: row, partIndex: partIndex, partLength: partData.length };
+}
+
+function finalizeQuestionImageUpload(row, partCount, questionId, quizId) {
+  row = Number(row);
+  partCount = Number(partCount);
+
+  logQuizEvent_('info', 'finalizeQuestionImageUpload', 'assembling image', {
+    row: row,
+    partCount: partCount,
+    questionId: questionId,
+    quizId: quizId
+  });
+
+  if (!row || row < 2) {
+    throw new Error('Invalid question row.');
+  }
+
+  var cache = CacheService.getScriptCache();
+  var metaJson = cache.get(questionImageUploadKey_(row, 'meta'));
+  if (!metaJson) {
+    throw new Error('Image upload session expired. Save the question again.');
+  }
+
+  var meta;
+  try {
+    meta = JSON.parse(metaJson);
+  } catch (parseError) {
+    throw new Error('Image upload metadata is invalid.');
+  }
+
+  if (partCount !== meta.partCount) {
+    logQuizEvent_('error', 'finalizeQuestionImageUpload', 'part count mismatch', {
+      row: row,
+      expected: meta.partCount,
+      received: partCount
+    });
+    throw new Error('Image upload part count mismatch.');
+  }
+
+  questionId = normalizeSheetId_(questionId || meta.questionId);
+  quizId = normalizeSheetId_(quizId || meta.quizId);
+  if (!questionId) {
+    throw new Error('Question ID is missing for image upload.');
+  }
+
+  var parts = [];
+  for (var i = 0; i < partCount; i++) {
+    var chunk = cache.get(questionImageUploadKey_(row, 'part_' + i));
+    if (!chunk) {
+      logQuizEvent_('error', 'finalizeQuestionImageUpload', 'missing cached part', {
+        row: row,
+        partIndex: i
+      });
+      throw new Error('Image part ' + i + ' was missing during upload.');
+    }
+    parts.push(chunk);
+  }
+
+  var assembled = parts.join('');
+  logQuizEvent_('info', 'finalizeQuestionImageUpload', 'assembled image', {
+    row: row,
+    assembledLength: assembled.length,
+    expectedLength: meta.totalLength
+  });
+
+  if (meta.totalLength && assembled.length !== meta.totalLength) {
+    logQuizEvent_('error', 'finalizeQuestionImageUpload', 'assembled length mismatch', {
+      row: row,
+      assembledLength: assembled.length,
+      expectedLength: meta.totalLength
+    });
+    throw new Error('Image upload was incomplete. Check the Logs sheet for details.');
+  }
+
+  var imageData = prepareQuestionImageData_(assembled);
+  if (!imageData) {
+    throw new Error('Image data was empty after upload.');
+  }
+
+  var ss = getQuizSpreadsheet_();
+  var questionsSheet = ensureSheet_(ss, 'Questions');
+  ensureQuestionsHeaders_(questionsSheet);
+
+  if (row > questionsSheet.getLastRow()) {
+    throw new Error('Question row ' + row + ' was not found.');
+  }
+
+  var stored = writeQuestionImageToSheet_(questionsSheet, row, questionId, quizId, imageData);
+  clearQuestionImageUpload_(row);
+  return {
+    row: row,
+    imageSaved: true,
+    imageBytes: imageData.length,
+    partCount: stored.partCount
+  };
+}
+
+function setQuestionImage(row, base64Image, questionId, quizId) {
+  beginQuestionImageUpload(row, 1, base64Image ? base64Image.length : 0, questionId, quizId);
+  uploadQuestionImagePart(row, 0, base64Image);
+  return finalizeQuestionImageUpload(row, 1, questionId, quizId);
+}
+
 function getIdsFromResponseRow_(responsesSheet, row) {
   if (!responsesSheet || row < 2 || row > responsesSheet.getLastRow()) {
     return { questionId: '', quizId: '' };
@@ -426,7 +942,8 @@ function getQuestionBankForQuiz_(questionsSheet, quizId) {
     return bank;
   }
 
-  var rows = questionsSheet.getRange('A2:F' + lastRow).getValues();
+  var rows = questionsSheet.getRange('A2:G' + lastRow).getValues();
+  var imageMap = buildQuestionImageMap_(questionsSheet.getParent());
   var number = 0;
 
   for (var i = 0; i < rows.length; i++) {
@@ -440,6 +957,7 @@ function getQuestionBankForQuiz_(questionsSheet, quizId) {
     bank[questionId] = {
       questionText: cellText_(rows[i][1]),
       rubricText: cellText_(rows[i][2]),
+      imageData: readQuestionImageData_(imageMap, rows[i][6], questionId, rowQuizId),
       questionNumber: number
     };
   }
@@ -500,8 +1018,9 @@ function findQuestionById_(questionsSheet, questionId, quizId, questionBank) {
     return null;
   }
 
-  var values = questionsSheet.getRange('A2:F' + lastRow).getValues();
+  var values = questionsSheet.getRange('A2:G' + lastRow).getValues();
   var questionDisplay = questionsSheet.getRange('B2:B' + lastRow).getDisplayValues();
+  var imageMap = buildQuestionImageMap_(questionsSheet.getParent());
   var fallback = null;
 
   for (var i = 0; i < values.length; i++) {
@@ -512,6 +1031,12 @@ function findQuestionById_(questionsSheet, questionId, quizId, questionBank) {
     var entry = {
       questionText: cellText_(questionDisplay[i][0] || values[i][1]),
       rubricText: cellText_(values[i][2]),
+      imageData: readQuestionImageData_(
+        imageMap,
+        values[i][6],
+        questionId,
+        normalizeSheetId_(values[i][4])
+      ),
       questionNumber: 999
     };
 
@@ -572,7 +1097,16 @@ function getQuestionInfo() {
   };
 }
 
-function addQuestionAndRubric(quizName, question, rubric) {
+function addQuestionAndRubric(quizNameOrPayload, question, rubric) {
+  var quizName;
+  if (quizNameOrPayload && typeof quizNameOrPayload === 'object') {
+    quizName = quizNameOrPayload.quizName;
+    question = quizNameOrPayload.question;
+    rubric = quizNameOrPayload.rubric;
+  } else {
+    quizName = quizNameOrPayload;
+  }
+
   quizName = String(quizName).trim();
   question = String(question).trim();
   rubric = String(rubric).trim();
@@ -590,6 +1124,7 @@ function addQuestionAndRubric(quizName, question, rubric) {
   var ss = getQuizSpreadsheet_();
   var questionsSheet = ensureSheet_(ss, 'Questions');
   ensureQuestionsHeaders_(questionsSheet);
+  ensureQuestionImagesSheet_(ss);
 
   var quizId = findQuizIdByName_(questionsSheet, quizName);
   var isNewQuiz = !quizId;
@@ -599,14 +1134,15 @@ function addQuestionAndRubric(quizName, question, rubric) {
 
   var row = getNextQuestionsRow_(questionsSheet);
   var questionId = generateUniqueQuestionId_(questionsSheet);
-  questionsSheet.getRange('A' + row).setValue(row);
-  questionsSheet.getRange('B' + row).setValue(question);
-  questionsSheet.getRange('C' + row).setValue(rubric);
-  questionsSheet.getRange('D' + row).setValue(quizName);
-  questionsSheet.getRange('E' + row).setValue(quizId);
-  questionsSheet.getRange('F' + row).setValue(questionId);
+  questionsSheet.appendRow([row, question, rubric, quizName, quizId, questionId, '']);
 
   SpreadsheetApp.flush();
+  logQuizEvent_('info', 'addQuestionAndRubric', 'question saved', {
+    row: row,
+    quizId: quizId,
+    questionId: questionId,
+    quizName: quizName
+  });
 
   var message = 'Question saved in row ' + row + '.';
   if (isNewQuiz) {
@@ -789,6 +1325,7 @@ function getEvaluationsForQuiz(quizId) {
         details = {
           questionText: cellText_(rowAligned.question),
           rubricText: cellText_(rowAligned.rubric),
+          imageData: cellText_(rowAligned.imageData),
           questionNumber: lookupQuestionInBank_(questionBank, questionId)
             ? lookupQuestionInBank_(questionBank, questionId).questionNumber
             : 999
@@ -807,6 +1344,7 @@ function getEvaluationsForQuiz(quizId) {
       quizId: rowQuizId,
       qPrompt: details ? details.questionText : '',
       questionText: details ? details.questionText : '',
+      imageData: details ? details.imageData : '',
       questionNumber: details ? details.questionNumber : 999
     });
   }
@@ -869,29 +1407,31 @@ function getQuestionsForQuiz(quizId) {
 
   ensureQuestionsHeaders_(questionsSheet);
   ensureQuestionIds_(questionsSheet);
+  ensureQuestionImagesSheet_(ss);
 
   var lastRow = questionsSheet.getLastRow();
   if (lastRow < 2) {
     return [];
   }
 
-  var rows = questionsSheet.getRange('A2:F' + lastRow).getValues();
+  var rows = questionsSheet.getRange('A2:G' + lastRow).getValues();
+  var questionDisplay = questionsSheet.getRange('B2:B' + lastRow).getDisplayValues();
+  var imageMap = buildQuestionImageMap_(ss);
   var questions = [];
 
   for (var i = 0; i < rows.length; i++) {
-    var sheetRow = rows[i][0] || (i + 2);
-    var question = rows[i][1];
     var rowQuizId = String(rows[i][4]).trim();
     var questionId = String(rows[i][5]).trim();
+    var questionText = cellText_(questionDisplay[i][0] || rows[i][1]).trim();
 
-    if (rowQuizId !== quizId || !question || !questionId) {
+    if (rowQuizId !== quizId || !questionText || !questionId) {
       continue;
     }
 
     questions.push({
-      row: sheetRow,
       questionId: questionId,
-      question: question,
+      questionText: questionText,
+      hasImage: questionHasStoredImage_(imageMap, rows[i][6], questionId, rowQuizId),
       number: questions.length + 1
     });
   }

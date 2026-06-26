@@ -111,25 +111,50 @@
         font-size: 13px;
       }
 
-      .question-box {
-        background: #e8f0fe;
-        border-left: 4px solid #1a73e8;
-        border-radius: 4px;
-        padding: 16px;
-        margin-bottom: 24px;
-      }
-
-      .question-label {
+      .question-progress {
+        color: #1a73e8;
         font-size: 12px;
         font-weight: 600;
-        color: #1a73e8;
-        text-transform: uppercase;
         letter-spacing: 0.5px;
+        margin-bottom: 16px;
+        text-transform: uppercase;
+      }
+
+      .content-block {
+        margin-bottom: 20px;
+      }
+
+      .content-label {
+        color: #202124;
+        display: block;
+        font-size: 14px;
+        font-weight: 600;
         margin-bottom: 8px;
       }
 
-      .question-text {
+      .content-field {
+        border-radius: 4px;
         font-size: 16px;
+        line-height: 1.6;
+        padding: 16px;
+      }
+
+      .content-field.question-field {
+        background: #e8f0fe;
+        border-left: 4px solid #1a73e8;
+      }
+
+      .content-field.image-field {
+        background: #fff;
+        border: 1px solid #dadce0;
+        padding: 12px;
+      }
+
+      .question-image {
+        display: block;
+        max-width: 100%;
+        height: auto;
+        border-radius: 4px;
       }
 
       .quiz-header {
@@ -241,9 +266,18 @@
       <section id="view-quiz" class="view-panel">
         <div class="quiz-header" id="quizHeader"></div>
 
-        <div class="question-box">
-          <div class="question-label" id="questionNumber">Question 1 of 1</div>
-          <div class="question-text" id="questionText"></div>
+        <div class="question-progress" id="questionNumber">Question 1 of 1</div>
+
+        <div class="content-block">
+          <span class="content-label">Question:</span>
+          <div class="content-field question-field" id="studentQuestionText"></div>
+        </div>
+
+        <div class="content-block" id="questionImageBlock" style="display:none;">
+          <span class="content-label">Image:</span>
+          <div class="content-field image-field">
+            <img id="questionImage" class="question-image" alt="Question image">
+          </div>
         </div>
 
         <label for="answerInput">Your Answer</label>
@@ -279,7 +313,8 @@
         quizName: '',
         questions: [],
         currentIndex: 0,
-        answers: {}
+        answers: {},
+        imageCache: {}
       };
 
       document.addEventListener('DOMContentLoaded', function() {
@@ -344,6 +379,7 @@
         state.quizName = quiz.quizName;
         state.currentIndex = 0;
         state.answers = {};
+        state.imageCache = {};
 
         google.script.run
           .withSuccessHandler(function(questions) {
@@ -369,7 +405,9 @@
           escapeHtml(state.studentName) + '</strong>';
         document.getElementById('questionNumber').textContent =
           'Question ' + (state.currentIndex + 1) + ' of ' + total;
-        document.getElementById('questionText').textContent = question.question;
+        document.getElementById('studentQuestionText').textContent = question.questionText || '';
+        document.getElementById('questionImageBlock').style.display = 'none';
+        loadQuestionImage(question);
 
         var savedAnswer = state.answers[question.questionId];
         document.getElementById('answerInput').value = savedAnswer || '';
@@ -448,7 +486,8 @@
           quizName: '',
           questions: [],
           currentIndex: 0,
-          answers: {}
+          answers: {},
+          imageCache: {}
         };
         document.getElementById('studentName').value = '';
         clearMessage('selectMessage');
@@ -462,6 +501,46 @@
         document.getElementById('view-select').classList.toggle('active', viewName === 'select');
         document.getElementById('view-quiz').classList.toggle('active', viewName === 'quiz');
         document.getElementById('view-done').classList.toggle('active', viewName === 'done');
+      }
+
+      function loadQuestionImage(question) {
+        var imgEl = document.getElementById('questionImage');
+        setQuestionImage(imgEl, '');
+
+        if (!question.hasImage) {
+          return;
+        }
+
+        if (state.imageCache[question.questionId]) {
+          setQuestionImage(imgEl, state.imageCache[question.questionId]);
+          return;
+        }
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            if (result.imageData) {
+              state.imageCache[question.questionId] = result.imageData;
+            }
+            var current = state.questions[state.currentIndex];
+            if (current && current.questionId === question.questionId) {
+              setQuestionImage(imgEl, result.imageData || '');
+            }
+          })
+          .withFailureHandler(function(err) {
+            showMessage('quizMessage', err.message || 'Could not load the question image.', true);
+          })
+          .getQuestionImage(state.quizId, question.questionId);
+      }
+
+      function setQuestionImage(imgEl, imageData) {
+        var imageBlock = document.getElementById('questionImageBlock');
+        if (imageData && String(imageData).indexOf('data:image/') === 0) {
+          imgEl.src = imageData;
+          imageBlock.style.display = 'block';
+        } else {
+          imgEl.src = '';
+          imageBlock.style.display = 'none';
+        }
       }
 
       function showMessage(elementId, text, isError) {

@@ -52,6 +52,24 @@
         resize: vertical;
       }
 
+      input[type="file"] {
+        display: block;
+        font-size: 14px;
+        margin-bottom: 12px;
+      }
+
+      .question-image-preview {
+        display: block;
+        max-width: 100%;
+        height: auto;
+        margin-bottom: 12px;
+        border-radius: 4px;
+      }
+
+      .image-actions {
+        margin-bottom: 16px;
+      }
+
       button {
         background: #1a73e8;
         color: #fff;
@@ -70,6 +88,17 @@
       button:disabled {
         background: #a8c7fa;
         cursor: not-allowed;
+      }
+
+      button.secondary {
+        background: #fff;
+        border: 1px solid #dadce0;
+        color: #3c4043;
+        margin-right: 8px;
+      }
+
+      button.secondary:hover {
+        background: #f8f9fa;
       }
 
       .message {
@@ -105,11 +134,155 @@
       <label for="newRubric">Rubric</label>
       <textarea id="newRubric" required placeholder="Describe how answers should be scored..."></textarea>
 
+      <label for="questionImage">Question Image (optional)</label>
+      <p class="field-hint">PNG or GIF only, max 1 MB. Charts and tables work well.</p>
+      <input type="file" id="questionImage" accept=".png,.gif,image/png,image/gif">
+      <img id="questionImagePreview" class="question-image-preview" alt="Question image preview" style="display:none;">
+      <div class="image-actions">
+        <button type="button" class="secondary" id="clearQuestionImageBtn" style="display:none;" onclick="clearQuestionImage()">Remove image</button>
+      </div>
+
       <button type="submit" id="addBtn">Save Question</button>
     </form>
     <div class="message" id="message"></div>
 
     <script>
+      var pendingQuestionImageData = '';
+      var MAX_QUESTION_IMAGE_BYTES = 1048576;
+      var IMAGE_UPLOAD_CHUNK_SIZE = 40000;
+
+      document.getElementById('questionImage').addEventListener('change', handleQuestionImageSelected);
+
+      function logToSheet(level, source, message, details) {
+        google.script.run
+          .withFailureHandler(function() {})
+          .logFromClient(level, source, message, JSON.stringify(details || {}));
+      }
+
+      function uploadQuestionImage(row, questionId, quizId, imageData, onSuccess, onError) {
+        var parts = [];
+        for (var i = 0; i < imageData.length; i += IMAGE_UPLOAD_CHUNK_SIZE) {
+          parts.push(imageData.substring(i, i + IMAGE_UPLOAD_CHUNK_SIZE));
+        }
+
+        logToSheet('info', 'client', 'begin image upload', {
+          row: row,
+          questionId: questionId,
+          quizId: quizId,
+          imageLength: imageData.length,
+          partCount: parts.length
+        });
+
+        function sendPart(index) {
+          if (index >= parts.length) {
+            google.script.run
+              .withSuccessHandler(onSuccess)
+              .withFailureHandler(function(err) {
+                logToSheet('error', 'client', 'finalizeQuestionImageUpload failed', {
+                  row: row,
+                  questionId: questionId,
+                  message: err.message || String(err)
+                });
+                onError(err);
+              })
+              .finalizeQuestionImageUpload(row, parts.length, questionId, quizId);
+            return;
+          }
+
+          google.script.run
+            .withSuccessHandler(function() {
+              sendPart(index + 1);
+            })
+            .withFailureHandler(function(err) {
+              logToSheet('error', 'client', 'uploadQuestionImagePart failed', {
+                row: row,
+                partIndex: index,
+                message: err.message || String(err)
+              });
+              onError(err);
+            })
+            .uploadQuestionImagePart(row, index, parts[index]);
+        }
+
+        google.script.run
+          .withSuccessHandler(function() {
+            sendPart(0);
+          })
+          .withFailureHandler(function(err) {
+            logToSheet('error', 'client', 'beginQuestionImageUpload failed', {
+              row: row,
+              questionId: questionId,
+              message: err.message || String(err)
+            });
+            onError(err);
+          })
+          .beginQuestionImageUpload(row, parts.length, imageData.length, questionId, quizId);
+      }
+
+      function readQuestionImageFile(input, onReady, onError) {
+        var file = input.files && input.files[0];
+        if (!file) {
+          onReady('');
+          return;
+        }
+
+        var type = (file.type || '').toLowerCase();
+        if (type !== 'image/png' && type !== 'image/gif') {
+          onError('Only PNG and GIF images are allowed.');
+          return;
+        }
+        if (file.size > MAX_QUESTION_IMAGE_BYTES) {
+          onError('Image must be 1 MB or smaller.');
+          return;
+        }
+
+        var reader = new FileReader();
+        reader.onload = function(event) {
+          onReady(event.target.result);
+        };
+        reader.onerror = function() {
+          onError('Could not read the image file.');
+        };
+        reader.readAsDataURL(file);
+      }
+
+      function handleQuestionImageSelected() {
+        var input = document.getElementById('questionImage');
+        var preview = document.getElementById('questionImagePreview');
+        var clearBtn = document.getElementById('clearQuestionImageBtn');
+
+        readQuestionImageFile(input, function(dataUrl) {
+          pendingQuestionImageData = dataUrl;
+          if (dataUrl) {
+            preview.src = dataUrl;
+            preview.style.display = 'block';
+            clearBtn.style.display = 'inline-block';
+          } else {
+            preview.src = '';
+            preview.style.display = 'none';
+            clearBtn.style.display = 'none';
+          }
+        }, function(errorMessage) {
+          input.value = '';
+          clearQuestionImage();
+          showError(errorMessage);
+        });
+      }
+
+      function clearQuestionImage() {
+        pendingQuestionImageData = '';
+        document.getElementById('questionImage').value = '';
+        document.getElementById('questionImagePreview').src = '';
+        document.getElementById('questionImagePreview').style.display = 'none';
+        document.getElementById('clearQuestionImageBtn').style.display = 'none';
+      }
+
+      function showError(text) {
+        var message = document.getElementById('message');
+        message.textContent = text;
+        message.className = 'message error';
+      }
+
       function handleAddQuestion(event) {
         event.preventDefault();
 
@@ -118,30 +291,95 @@
         var rubric = document.getElementById('newRubric').value.trim();
         var btn = document.getElementById('addBtn');
         var message = document.getElementById('message');
+        var imageInput = document.getElementById('questionImage');
+        var hadFile = !!(imageInput.files && imageInput.files[0]);
+        var hadPending = !!pendingQuestionImageData;
 
         if (!quizName || !question || !rubric) {
-          message.textContent = 'Quiz name, question, and rubric are all required.';
-          message.className = 'message error';
+          showError('Quiz name, question, and rubric are all required.');
           return;
         }
 
-        btn.disabled = true;
-        message.className = 'message';
-        message.style.display = 'none';
+        function submitQuestion(imageData) {
+          logToSheet('info', 'client', 'submitQuestion', {
+            hasImageData: !!imageData,
+            imageLength: imageData ? imageData.length : 0,
+            hadFile: hadFile,
+            hadPending: hadPending,
+            pendingLength: pendingQuestionImageData ? pendingQuestionImageData.length : 0
+          });
 
-        google.script.run
-          .withSuccessHandler(function(result) {
+          if (!imageData && (hadFile || hadPending)) {
+            showError('The image could not be read from the file picker. Check the Logs sheet.');
+            return;
+          }
+
+          btn.disabled = true;
+          message.className = 'message';
+          message.style.display = 'none';
+
+          function finishSave(result, imageMessage) {
             btn.disabled = false;
             document.getElementById('addForm').reset();
-            message.textContent = result.message;
+            clearQuestionImage();
+            message.textContent = result.message + (imageMessage ? ' ' + imageMessage : '');
             message.className = 'message success';
-          })
-          .withFailureHandler(function(err) {
-            btn.disabled = false;
-            message.textContent = err.message || String(err);
-            message.className = 'message error';
-          })
-          .addQuestionAndRubric(quizName, question, rubric);
+          }
+
+          google.script.run
+            .withSuccessHandler(function(result) {
+              if (!imageData) {
+                finishSave(result, '');
+                return;
+              }
+
+              uploadQuestionImage(
+                result.row,
+                result.questionId,
+                result.quizId,
+                imageData,
+                function(imageResult) {
+                if (!imageResult || !imageResult.imageSaved) {
+                  btn.disabled = false;
+                  showError(
+                    result.message + ' However, the image was not saved. Check the Logs sheet.'
+                  );
+                  return;
+                }
+                finishSave(result, 'Image saved (' + imageResult.imageBytes + ' characters).');
+              }, function(err) {
+                btn.disabled = false;
+                showError(
+                  result.message + ' However, the image could not be saved: ' +
+                  (err.message || String(err)) + ' Check the Logs sheet.'
+                );
+              });
+            })
+            .withFailureHandler(function(err) {
+              btn.disabled = false;
+              logToSheet('error', 'client', 'addQuestionAndRubric failed', {
+                message: err.message || String(err)
+              });
+              showError(err.message || String(err));
+            })
+            .addQuestionAndRubric({
+              quizName: quizName,
+              question: question,
+              rubric: rubric
+            });
+        }
+
+        if (imageInput.files && imageInput.files[0]) {
+          readQuestionImageFile(imageInput, submitQuestion, showError);
+          return;
+        }
+
+        if (pendingQuestionImageData) {
+          submitQuestion(pendingQuestionImageData);
+          return;
+        }
+
+        submitQuestion('');
       }
     </script>
   </body>

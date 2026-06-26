@@ -5,13 +5,13 @@ alwaysApply: true
 
 # Quiz Prototype Project
 
-Container-bound Google Apps Script + clasp project for a teacher/student multi-question quiz with Anthropic-powered grading.
+Container-bound Google Apps Script + clasp project for a teacher/student multi-question quiz with Anthropic-powered grading and optional per-question images (PNG/GIF).
 
 ## Files
 
 | File | Role |
 |---|---|
-| `Code.gs` | Server logic: routing, quiz CRUD, student submit, AI evaluation, review |
+| `Code.gs` | Server logic: routing, quiz CRUD, images, student submit, AI evaluation, review, logging |
 | `teacher.html` | Teacher dashboard — **Add Question**, **Evaluate**, **Review** (`?teach`) |
 | `add-question.html` | Spreadsheet modal for **Quiz → Add Question and Rubric** |
 | `student.html` | Quiz picker, one-question-at-a-time UI, submit full quiz |
@@ -21,11 +21,21 @@ Container-bound Google Apps Script + clasp project for a teacher/student multi-q
 
 ## Spreadsheet tabs
 
-- **Questions** — A = row, B = question, C = rubric, D = quiz name, E = quiz ID, F = question ID
+- **Questions** — A = row, B = question, C = rubric, D = quiz name, E = quiz ID, F = question ID, G = image marker (`PARTS:n` or legacy `data:image/...` in one cell)
+- **QuestionImages** — A = question ID, B = quiz ID, C = part index (0-based), D = image data chunk (base64 data URI split across rows; max ~49k chars per cell)
 - **Responses** — A = timestamp, B = name, C = answer, D = status, E = question ID, F = quiz ID (one row per answer)
 - **Evaluations** — A = timestamp, B = name, C = answer, D = rubric, E = AI feedback, F = question ID, G = quiz ID
+- **Logs** — A = timestamp, B = level, C = source, D = message, E = details (JSON); created on first log or **Quiz → Set up sheets**
 
 Questions in the same quiz share **quiz name** (D) and **quiz ID** (E). Each question row has its own **question ID** (F). IDs are random 8-character strings (no ambiguous chars).
+
+## Question images
+
+- **Optional** PNG or GIF via file picker (teacher **Add Question** and spreadsheet modal); max **1 MB** file size.
+- Client reads file as `data:image/...;base64,...`, uploads in **~40 KB transport chunks** (`beginQuestionImageUpload` → `uploadQuestionImagePart` → `finalizeQuestionImageUpload`), then server stores in **QuestionImages** (storage chunks ~49 KB per cell — Sheets 50k cell limit).
+- **Questions G** holds `PARTS:n` after save (not the full image). Legacy single-cell `data:image/...` in G still reads via `readQuestionImageData_`.
+- **Student** loads `questionText` + `hasImage` from `getQuestionsForQuiz`; loads image lazily via `getQuestionImage(quizId, questionId)` (cached client-side). Do **not** put full `imageData` in the quiz list response.
+- **Review** resolves images through `getQuestionBankForQuiz_` / `readQuestionImageData_` (`imageData` on bank entries).
 
 ## IDs and linking
 
@@ -35,17 +45,17 @@ Questions in the same quiz share **quiz name** (D) and **quiz ID** (E). Each que
 
 ## Teacher workflow
 
-1. **Add Question** (`?teach` or spreadsheet menu) — quiz name, question, rubric; reusing a quiz name reuses its quiz ID.
+1. **Add Question** (`?teach` or **Quiz → Add Question and Rubric**) — quiz name, question, rubric, optional image; reusing a quiz name reuses its quiz ID.
 2. **Evaluate** — pick a quiz; grades all **Pending** responses for that quiz via Anthropic API.
 3. **Review** — pick a quiz; browse evaluations one at a time; optionally **Edit Evaluation** and submit changes to the Evaluations sheet.
 
-Spreadsheet menu **Quiz → Run AI Evaluation** grades **all** pending responses (all quizzes).
+Spreadsheet menu: **Quiz → Run AI Evaluation** (all quizzes), **Open Logs**, **Authorize API access**, **Set up sheets**.
 
 ## Student workflow
 
 1. Open deployment URL (no query string).
 2. Enter name, pick a quiz.
-3. Answer questions one at a time (Previous / Next).
+3. Answer questions one at a time (Previous / Next). UI shows **Question:** (text) and **Image:** (if present) in separate blocks.
 4. **Submit Quiz** — one Responses row per answer, Status **Pending**.
 
 ## URLs
@@ -65,7 +75,7 @@ Anthropic API calls run on **Google's servers**, not the school network. Teacher
 
 ## Grading
 
-Uses Anthropic Messages API (`claude-haiku-4-5-20251001`) via `UrlFetchApp` in `triggerEvaluation(quizId)`. School Google accounts may lack Sheets `=AI()` — do not use sheet formulas for grading.
+Uses Anthropic Messages API (`claude-haiku-4-5-20251001`) via `UrlFetchApp` in `triggerEvaluation(quizId)`. School Google accounts may lack Sheets `=AI()` — do not use sheet formulas for grading. Grading is text-only today (images are not sent to the model).
 
 ## Question content (for demos)
 
@@ -77,3 +87,4 @@ Uses Anthropic Messages API (`claude-haiku-4-5-20251001`) via `UrlFetchApp` in `
 
 - **Next planned content area:** statistics questions (content only — no code started).
 - **Future teacher features:** create/copy/archive/delete quiz (not implemented).
+- **Future grading:** optional vision input for questions with images.

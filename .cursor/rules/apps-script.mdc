@@ -19,6 +19,7 @@ Evaluation and review use **question ID** and **quiz ID**, not response row numb
 | Sheet | Question ID | Quiz ID |
 |---|---|---|
 | Questions | F | E |
+| QuestionImages | A | B |
 | Responses | E | F |
 | Evaluations | F | G |
 
@@ -26,37 +27,58 @@ Key helpers:
 
 - `normalizeSheetId_(value)`, `cellText_(value)` — safe ID/text handling (trim, strip leading `'`)
 - `getQuestionAndRubricByQuestionId_(questionsSheet, questionId, quizId)` — rubric lookup for grading
-- `getQuestionBankForQuiz_`, `findQuestionById_`, `resolveQuestionIdForEval_` — review screen question text
+- `getQuestionBankForQuiz_`, `findQuestionById_`, `resolveQuestionIdForEval_` — review screen question text + `imageData`
+- `buildQuestionImageMap_`, `readQuestionImageData_`, `questionHasStoredImage_`, `lookupQuestionImageData_` — image read path
+- `writeQuestionImageToSheet_` — split image into QuestionImages rows; set Questions G to `PARTS:n`
 - `getIdsFromResponseRow_(responsesSheet, row)` — fallback when Evaluations F/G are empty
 - `ensureQuestionIds_(questionsSheet)` — backfill missing F column on Questions
 - `generateShortId_()` / `generateUniqueQuestionId_` / `generateUniqueQuizId_` — 8-char IDs
+- `ensureLogsSheet_`, `logQuizEvent_`, `logFromClient` — **Logs** tab diagnostics
 
 ## Public API surface (web + menu)
 
 **Teacher**
 
-- `addQuestionAndRubric(quizName, question, rubric)` — append Questions row; reuse quiz ID by name
+- `addQuestionAndRubric({ quizName, question, rubric })` — `appendRow` on Questions; returns `{ row, questionId, quizId, message, ... }`. Image saved separately (see below).
+- `beginQuestionImageUpload(row, partCount, totalLength, questionId, quizId)`
+- `uploadQuestionImagePart(row, partIndex, partData)`
+- `finalizeQuestionImageUpload(row, partCount, questionId, quizId)` — assembles transport chunks, calls `writeQuestionImageToSheet_`
 - `getQuizEvaluationList()` — quizzes + pending counts
 - `triggerEvaluation(quizId)` — grade Pending rows; omit `quizId` to grade all (spreadsheet menu)
 - `getQuizReviewList()` — quizzes + evaluated counts
-- `getEvaluationsForQuiz(quizId)` — returns `questionText`, `qPrompt`, `answerText`, `rubricText`, `evaluationText`, etc.
+- `getEvaluationsForQuiz(quizId)` — returns `questionText`, `qPrompt`, `answerText`, `rubricText`, `evaluationText`, `imageData`, etc.
 - `updateEvaluation(row, evaluationText)` — teacher edit of column E
+- `logFromClient(level, source, message, detailsJson)` — client-side logging to **Logs**
 
 **Student**
 
-- `getQuizList()`, `getQuestionsForQuiz(quizId)`, `submitQuiz(studentName, quizId, answers)`
+- `getQuizList()`
+- `getQuestionsForQuiz(quizId)` — `{ questionId, questionText, hasImage, number }` per question (no full `imageData`)
+- `getQuestionImage(quizId, questionId)` — `{ imageData, hasImage, ... }` for lazy image load
+- `submitQuiz(studentName, quizId, answers)`
+
+**Menu**
+
+- `openLogsSheet`, `setupSheet`, `showAddQuestionDialog`, `runEvaluationWithAlert`, `authorizeExternalRequests`
 
 **Routing**
 
 - `doGet(e)` — default → student; `?teach` → teacher
 
+## Image validation
+
+- `prepareQuestionImageData_(base64Image)` — strip whitespace, require `data:image/(png|gif);base64,`, max ~1 MB decoded
+- Do not write full images to a single Questions cell — use **QuestionImages** (50k character cell limit)
+
 ## Header ensure functions
 
 Call before read/write on existing sheets (upgrades headers without wiping data):
 
-- `ensureQuestionsHeaders_` — through column F
+- `ensureQuestionsHeaders_` — through column G
+- `ensureQuestionImagesSheet_` — QuestionImages tab
 - `ensureResponsesHeaders_` — through column F
 - `ensureEvaluationsHeaders_` — through column G
+- `ensureLogsSheet_` — Logs tab
 
 ## API key
 
@@ -80,15 +102,16 @@ for (var i = 0; i < widths.length; i++) {
 // ❌ 4-arg getRange(row, col, row, col) is (startRow, startCol, numRows, numCols)
 evalSheet.getRange(2, 1, 2, 4); // selects 2 rows!
 
-// ✅ use A1 notation
-evalSheet.getRange('A2:D2').setValues([[a, b, c, d]]);
+// ✅ use A1 notation for multi-row writes
+imageSheet.getRange('A' + startRow + ':D' + endRow).setValues(writeRows);
 ```
 
-- When reading Questions `A2:F`, indices are: `[1]` question, `[2]` rubric, `[4]` quiz ID, `[5]` question ID
+- When reading Questions `A2:G`, indices are: `[1]` question, `[2]` rubric, `[4]` quiz ID, `[5]` question ID, `[6]` image marker / legacy image
 - When reading Evaluations `A2:G`, indices are: `[4]` AI feedback, `[5]` question ID, `[6]` quiz ID
 - Responses **must** have headers in row 1; call `ensureResponsesHeaders_` before reading/writing
 - Wrap `UrlFetchApp.fetch` + `JSON.parse` in try/catch; use `muteHttpExceptions: true`
 - Menu actions that need user feedback: wrap in alert helper (see `runEvaluationWithAlert`)
+- Large base64 strings: pass as **single payload object** to `google.script.run` and/or use **transport chunking** — do not rely on a 4th positional string argument
 
 ## OAuth scopes (appsscript.json)
 
