@@ -74,12 +74,22 @@ Spreadsheet menu: **Quiz → Run AI Evaluation**, **Seed Histogram Pilot Quiz**,
 
 Anthropic API calls run on **Google's servers**, not the school network.
 
-## Grading (question-first batch)
+## Grading (question-first batch, 4-point rubric)
+
+All evaluation uses a **Grading for Equity** 4-point scale (0–4). The philosophy is in `EVAL_GRADING_PHILOSOPHY_` in `Code.gs` and is **included in every** `callAnthropicBatchGrade_` API request:
+
+- **4** — correctly addressed **all** requested facts from the question-specific rubric
+- **3** — correctly addressed **most** requested facts
+- **2** — correctly addressed **some** requested facts
+- **1** — addressed **at least one** requested fact correctly
+- **0** — **none** of the requested facts from the rubric
+
+Per-question rubrics (Questions column C) should list **requested facts** and **common misconceptions**, not point buckets out of 10. The global 4-point scale applies on top of those facts.
 
 - Model: `claude-haiku-4-5-20251001` via `triggerEvaluationByQuestion_(quizId)`.
 - Groups **Pending** responses by question; sends up to **15 student answers per API call** (`EVAL_BATCH_SIZE_`).
-- Model returns JSON array: `[{ id, score, feedback }]` where `id` = Responses row number.
-- Writes Evaluations column E as `Score: X/10\n\n{feedback}`.
+- Model returns JSON array: `[{ id, score, feedback }]` where `id` = Responses row number and `score` is 0–4.
+- Writes Evaluations column E as `Score: X/4\n\n{feedback}`.
 - Text-only grading (images not sent to model).
 - Validated pilot: **Histograms Pilot Quiz** — 5 students × 2 questions = 10 answers in **2 API calls** (~13 s).
 
@@ -90,7 +100,7 @@ All web pages use a **processing overlay** (`showProcessing` / `showDone` / `hid
 ## Question content (for demos)
 
 - Write question, rubric, and sample answers as **single paragraphs** (no line breaks in sheet cells).
-- Prefer rubrics with **explicit point buckets** and **named misconceptions** for partial credit.
+- Prefer rubrics that list **requested facts** and **named misconceptions**; scoring uses the global 0–4 scale above, not per-fact point weights.
 - Use `seedHistogramPilotQuiz()` / **Quiz → Seed Histogram Pilot Quiz** for a 2-question statistics histogram pilot with 5 varied student responses.
 
 ## Roadmap

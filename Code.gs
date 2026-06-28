@@ -43,6 +43,17 @@ function runEvaluationWithAlert() {
 var EVAL_BATCH_SIZE_ = 15;
 var EVAL_BATCH_MAX_TOKENS_ = 8192;
 var EVAL_MODEL_ = 'claude-haiku-4-5-20251001';
+var EVAL_SCORE_MAX_ = 4;
+var EVAL_GRADING_PHILOSOPHY_ = [
+  'Grading philosophy (Grading for Equity — 4-point rubric):',
+  'Score each answer from 0 to 4 based on how many requested facts from the question-specific rubric the student addressed correctly.',
+  '- 4: Correctly addressed all requested facts from the rubric.',
+  '- 3: Correctly addressed most requested facts.',
+  '- 2: Correctly addressed some requested facts.',
+  '- 1: Addressed at least one requested fact correctly.',
+  '- 0: None of the requested facts from the rubric were addressed correctly.',
+  'Use the question-specific rubric below to identify the requested facts. Apply this scale consistently across all students in the batch.'
+].join('\n');
 
 function ensureResponsesHeaders_(sheet) {
   if (sheet.getRange('A1').getValue() === 'Timestamp') {
@@ -1632,7 +1643,19 @@ function extractJsonFromModelText_(text) {
 }
 
 function formatBatchEvaluationText_(score, feedback) {
-  var scoreText = score === '' || score == null ? '' : 'Score: ' + score + '/10';
+  if (score !== '' && score != null) {
+    var n = Math.round(Number(score));
+    if (!isNaN(n)) {
+      if (n < 0) {
+        n = 0;
+      }
+      if (n > EVAL_SCORE_MAX_) {
+        n = EVAL_SCORE_MAX_;
+      }
+      score = n;
+    }
+  }
+  var scoreText = score === '' || score == null ? '' : 'Score: ' + score + '/' + EVAL_SCORE_MAX_;
   feedback = String(feedback || '').trim();
   if (scoreText && feedback) {
     return scoreText + '\n\n' + feedback;
@@ -1720,25 +1743,27 @@ function callAnthropicBatchGrade_(apiKey, question, rubric, entries) {
   }
 
   var userMessage = [
-    'You are grading student quiz answers for ONE question. Apply the rubric consistently across all students.',
+    'You are grading student quiz answers for ONE question.',
+    '',
+    EVAL_GRADING_PHILOSOPHY_,
     '',
     'Question:',
     question,
     '',
-    'Rubric:',
+    'Question-specific rubric (lists requested facts and common misconceptions):',
     rubric,
     '',
     'Students to grade (JSON):',
     JSON.stringify(studentPayload),
     '',
     'Return ONLY valid JSON (no markdown fences) as an array with one object per student:',
-    '[{"id":"<response row id>","score":7,"feedback":"Brief feedback here."}, ...]',
+    '[{"id":"<response row id>","score":3,"feedback":"Brief feedback here."}, ...]',
     '',
     'Rules:',
     '- Include exactly one object for every student in the input.',
     '- Use the same id values from the input.',
-    '- score must be a number from 0 to 10.',
-    '- feedback should be 2-3 sentences.'
+    '- score must be a whole number from 0 to ' + EVAL_SCORE_MAX_ + ' (per the grading philosophy above).',
+    '- feedback should be 2-3 sentences; cite which requested facts were met or missed.'
   ].join('\n');
 
   var payload = {
@@ -2013,11 +2038,10 @@ function seedHistogramPilotQuiz() {
     'skewed left, or skewed right. Identify the most common bin and explain what the tail shows.';
 
   var question1Rubric =
-    'Score out of 10. (2 pts) States the distribution is unimodal. (3 pts) Correctly identifies right skew ' +
-    'and explains the tail extends toward higher page counts. (2 pts) Identifies 0-10 pages as the most common ' +
-    'bin with 8 students. (2 pts) Notes fewer students in higher bins forming the tail. (1 pt) Clear, complete ' +
-    'answer tied to the data. Deduct heavily for symmetric or left skew without evidence. Partial credit for ' +
-    'correct peak only.';
+    'Requested facts: distribution is unimodal; correctly identifies right skew and explains the tail extends ' +
+    'toward higher page counts; identifies 0-10 pages as the most common bin with 8 students; notes fewer students ' +
+    'in higher bins forming the tail; clear answer tied to the data. Common misconceptions: symmetric or left skew ' +
+    'without evidence; naming the peak only without shape or tail reasoning.';
 
   var question2Text =
     'The histogram shows hours of sleep per night for 30 students. Bin counts: 4-5 hours: 2 students; ' +
@@ -2026,10 +2050,10 @@ function seedHistogramPilotQuiz() {
     'value and explain how much variability you see, using evidence from the bins.';
 
   var question2Rubric =
-    'Score out of 10. (3 pts) Center estimate in the 6-8 hour range with justification from the highest bins ' +
-    '(6-7: 9 students, 7-8: 10 students). (3 pts) Describes spread/variability using the range across bins ' +
-    '(roughly 4-5 to 9-10 hours) or similar reasoning. (2 pts) Notes the distribution is approximately ' +
-    'symmetric. (2 pts) Cites specific bin counts as evidence. Partial credit for center OR spread alone.';
+    'Requested facts: center estimate in the 6-8 hour range with justification from the highest bins ' +
+    '(6-7: 9 students, 7-8: 10 students); describes spread/variability using the range across bins ' +
+    '(roughly 4-5 to 9-10 hours) or similar reasoning; notes the distribution is approximately symmetric; ' +
+    'cites specific bin counts as evidence. Partial understanding: center OR spread alone without the other.';
 
   var row1 = getNextQuestionsRow_(questionsSheet);
   var row2 = row1 + 1;

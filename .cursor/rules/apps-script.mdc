@@ -40,9 +40,11 @@ Key helpers:
 
 - `triggerEvaluation(quizId)` — public entry; delegates to `triggerEvaluationByQuestion_`
 - `collectPendingResponsesByQuestion_(allResponses, quizId)` — group Pending rows by question
-- `callAnthropicBatchGrade_(apiKey, question, rubric, entries)` — one API call for up to `EVAL_BATCH_SIZE_` (15) answers
+- `callAnthropicBatchGrade_(apiKey, question, rubric, entries)` — one API call for up to `EVAL_BATCH_SIZE_` (15) answers; **always** prepends `EVAL_GRADING_PHILOSOPHY_` (Grading for Equity 0–4 scale)
 - `extractJsonFromModelText_(text)`, `formatBatchEvaluationText_(score, feedback)`, `writeBatchEvaluationResults_`
-- Constants: `EVAL_BATCH_SIZE_ = 15`, `EVAL_BATCH_MAX_TOKENS_ = 8192`, `EVAL_MODEL_ = 'claude-haiku-4-5-20251001'`
+- Constants: `EVAL_BATCH_SIZE_ = 15`, `EVAL_BATCH_MAX_TOKENS_ = 8192`, `EVAL_MODEL_ = 'claude-haiku-4-5-20251001'`, `EVAL_SCORE_MAX_ = 4`, `EVAL_GRADING_PHILOSOPHY_`
+- Scores: whole numbers **0–4**; stored as `Score: X/4` in Evaluations column E
+- Per-question rubrics list **requested facts**; do not use legacy `/10` point-bucket rubrics in new content
 
 ## Public API surface (web + menu)
 
