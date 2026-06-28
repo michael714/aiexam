@@ -245,6 +245,55 @@
         padding: 16px;
         text-align: center;
       }
+
+      .processing-overlay {
+        align-items: center;
+        background: rgba(32, 33, 36, 0.45);
+        display: none;
+        inset: 0;
+        justify-content: center;
+        position: fixed;
+        z-index: 1000;
+      }
+
+      .processing-dialog {
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+        min-width: 220px;
+        padding: 28px 32px;
+        text-align: center;
+      }
+
+      .processing-spinner {
+        animation: spin 0.9s linear infinite;
+        border: 3px solid #e8f0fe;
+        border-radius: 50%;
+        border-top-color: #1a73e8;
+        height: 36px;
+        margin: 0 auto 16px;
+        width: 36px;
+      }
+
+      .processing-spinner.done {
+        animation: none;
+        border: none;
+        color: #137333;
+        font-size: 32px;
+        height: auto;
+        line-height: 1;
+        width: auto;
+      }
+
+      .processing-message {
+        color: #202124;
+        font-size: 15px;
+        font-weight: 500;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
     </style>
   </head>
   <body>
@@ -306,6 +355,13 @@
       </section>
     </div>
 
+    <div id="processingOverlay" class="processing-overlay">
+      <div class="processing-dialog">
+        <div id="processingSpinner" class="processing-spinner"></div>
+        <div id="processingMessage" class="processing-message">Processing...</div>
+      </div>
+    </div>
+
     <script>
       var state = {
         studentName: '',
@@ -317,14 +373,51 @@
         imageCache: {}
       };
 
+      var processingTimer = null;
+
+      function showProcessing(message) {
+        if (processingTimer) {
+          clearTimeout(processingTimer);
+          processingTimer = null;
+        }
+        document.getElementById('processingSpinner').className = 'processing-spinner';
+        document.getElementById('processingSpinner').textContent = '';
+        document.getElementById('processingMessage').textContent = message || 'Processing...';
+        document.getElementById('processingOverlay').style.display = 'flex';
+      }
+
+      function showDone(message) {
+        var spinner = document.getElementById('processingSpinner');
+        spinner.className = 'processing-spinner done';
+        spinner.textContent = '\u2713';
+        document.getElementById('processingMessage').textContent = message || 'Done!';
+        processingTimer = setTimeout(function() {
+          document.getElementById('processingOverlay').style.display = 'none';
+          processingTimer = null;
+        }, 700);
+      }
+
+      function hideProcessing() {
+        if (processingTimer) {
+          clearTimeout(processingTimer);
+          processingTimer = null;
+        }
+        document.getElementById('processingOverlay').style.display = 'none';
+      }
+
       document.addEventListener('DOMContentLoaded', function() {
         loadQuizList();
       });
 
       function loadQuizList() {
+        showProcessing('Loading quizzes...');
         google.script.run
-          .withSuccessHandler(renderQuizList)
+          .withSuccessHandler(function(quizzes) {
+            hideProcessing();
+            renderQuizList(quizzes);
+          })
           .withFailureHandler(function(err) {
+            hideProcessing();
             showMessage('selectMessage', err.message || String(err), true);
             document.getElementById('quizList').innerHTML =
               '<div class="empty-state">Could not load quizzes.</div>';
@@ -381,13 +474,17 @@
         state.answers = {};
         state.imageCache = {};
 
+        showProcessing('Loading quiz...');
+
         google.script.run
           .withSuccessHandler(function(questions) {
             state.questions = questions;
             showView('quiz');
             renderCurrentQuestion();
+            hideProcessing();
           })
           .withFailureHandler(function(err) {
+            hideProcessing();
             showMessage('selectMessage', err.message || String(err), true);
           })
           .getQuestionsForQuiz(quiz.quizId);
@@ -458,13 +555,16 @@
         submitBtn.disabled = true;
         nextBtn.disabled = true;
         prevBtn.disabled = true;
+        showProcessing('Submitting quiz...');
 
         google.script.run
           .withSuccessHandler(function(result) {
+            showDone('Done!');
             document.getElementById('doneMessage').textContent = result;
             showView('done');
           })
           .withFailureHandler(function(err) {
+            hideProcessing();
             submitBtn.disabled = false;
             nextBtn.disabled = false;
             prevBtn.disabled = state.currentIndex === 0;

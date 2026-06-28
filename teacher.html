@@ -288,6 +288,65 @@
         font-size: 13px;
       }
 
+      .review-current-banner {
+        background: #e8f0fe;
+        border: 1px solid #c2d7fa;
+        border-radius: 10px;
+        color: #174ea6;
+        font-size: 15px;
+        font-weight: 600;
+        line-height: 1.5;
+        margin-top: 12px;
+        padding: 12px 16px;
+      }
+
+      .review-nav-row-top {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        justify-content: space-between;
+        margin: 18px 0 8px;
+      }
+
+      .review-nav-row-top .left,
+      .review-nav-row-top .right {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .review-footer {
+        background: #f8f9fa;
+        border: 1px solid #e8eaed;
+        border-radius: 10px;
+        margin-top: 20px;
+        padding: 16px 18px;
+      }
+
+      .review-footer-label {
+        color: #5f6368;
+        display: block;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.6px;
+        margin-bottom: 6px;
+        text-transform: uppercase;
+      }
+
+      .review-footer-student {
+        color: #202124;
+        font-size: 16px;
+        font-weight: 600;
+        margin-bottom: 14px;
+      }
+
+      .review-footer-question {
+        color: #3c4043;
+        font-size: 14px;
+        line-height: 1.65;
+      }
+
       .content-block {
         margin-bottom: 18px;
       }
@@ -382,6 +441,55 @@
       .review-subview.active {
         display: block;
       }
+
+      .processing-overlay {
+        align-items: center;
+        background: rgba(32, 33, 36, 0.45);
+        display: none;
+        inset: 0;
+        justify-content: center;
+        position: fixed;
+        z-index: 1000;
+      }
+
+      .processing-dialog {
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+        min-width: 240px;
+        padding: 28px 32px;
+        text-align: center;
+      }
+
+      .processing-spinner {
+        animation: spin 0.9s linear infinite;
+        border: 3px solid #e8f0fe;
+        border-radius: 50%;
+        border-top-color: #1a73e8;
+        height: 36px;
+        margin: 0 auto 16px;
+        width: 36px;
+      }
+
+      .processing-spinner.done {
+        animation: none;
+        border: none;
+        color: #137333;
+        font-size: 32px;
+        height: auto;
+        line-height: 1;
+        width: auto;
+      }
+
+      .processing-message {
+        color: #202124;
+        font-size: 15px;
+        font-weight: 500;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
     </style>
   </head>
   <body>
@@ -445,6 +553,17 @@
           <div class="review-header">
             <div class="review-header-title" id="reviewQuizTitle"></div>
             <div class="review-header-meta" id="reviewPositionMeta"></div>
+            <div class="review-current-banner" id="reviewCurrentBanner"></div>
+          </div>
+
+          <div class="review-nav-row-top">
+            <div class="left">
+              <button type="button" class="secondary" onclick="backToReviewList()">Back to Quizzes</button>
+            </div>
+            <div class="right">
+              <button type="button" class="secondary" data-review-nav="prev" onclick="goToReviewPrevious()">Previous</button>
+              <button type="button" class="secondary" data-review-nav="next" onclick="goToReviewNext()">Next</button>
+            </div>
           </div>
 
           <div class="content-block">
@@ -473,8 +592,8 @@
               <button type="button" class="secondary" onclick="backToReviewList()">Back to Quizzes</button>
             </div>
             <div class="right">
-              <button type="button" class="secondary" id="reviewPrevBtn" onclick="goToReviewPrevious()">Previous</button>
-              <button type="button" class="secondary" id="reviewNextBtn" onclick="goToReviewNext()">Next</button>
+              <button type="button" class="secondary" data-review-nav="prev" onclick="goToReviewPrevious()">Previous</button>
+              <button type="button" class="secondary" data-review-nav="next" onclick="goToReviewNext()">Next</button>
               <button type="button" class="secondary" id="reviewEditBtn" onclick="startEditEvaluation()">Edit Evaluation</button>
               <div class="edit-actions" id="reviewEditActions">
                 <button type="button" class="secondary" onclick="cancelEditEvaluation()">Cancel</button>
@@ -483,9 +602,23 @@
             </div>
           </div>
 
+          <div class="review-footer">
+            <span class="review-footer-label">Current Student</span>
+            <div class="review-footer-student" id="reviewFooterStudent"></div>
+            <span class="review-footer-label">Current Question</span>
+            <div class="review-footer-question" id="reviewFooterQuestion"></div>
+          </div>
+
           <div class="message" id="reviewDetailMessage"></div>
         </div>
       </section>
+    </div>
+
+    <div id="processingOverlay" class="processing-overlay">
+      <div class="processing-dialog">
+        <div id="processingSpinner" class="processing-spinner"></div>
+        <div id="processingMessage" class="processing-message">Processing...</div>
+      </div>
     </div>
 
     <script>
@@ -494,12 +627,43 @@
         items: [],
         currentIndex: 0,
         editing: false,
-        originalEvaluation: ''
+        originalEvaluation: '',
+        imageCache: {}
       };
 
       var pendingQuestionImageData = '';
       var MAX_QUESTION_IMAGE_BYTES = 1048576;
-      var IMAGE_UPLOAD_CHUNK_SIZE = 40000;
+      var processingTimer = null;
+
+      function showProcessing(message) {
+        if (processingTimer) {
+          clearTimeout(processingTimer);
+          processingTimer = null;
+        }
+        document.getElementById('processingSpinner').className = 'processing-spinner';
+        document.getElementById('processingSpinner').textContent = '';
+        document.getElementById('processingMessage').textContent = message || 'Processing...';
+        document.getElementById('processingOverlay').style.display = 'flex';
+      }
+
+      function showDone(message) {
+        var spinner = document.getElementById('processingSpinner');
+        spinner.className = 'processing-spinner done';
+        spinner.textContent = '\u2713';
+        document.getElementById('processingMessage').textContent = message || 'Done!';
+        processingTimer = setTimeout(function() {
+          document.getElementById('processingOverlay').style.display = 'none';
+          processingTimer = null;
+        }, 700);
+      }
+
+      function hideProcessing() {
+        if (processingTimer) {
+          clearTimeout(processingTimer);
+          processingTimer = null;
+        }
+        document.getElementById('processingOverlay').style.display = 'none';
+      }
 
       document.addEventListener('DOMContentLoaded', function() {
         var imageInput = document.getElementById('questionImage');
@@ -526,14 +690,23 @@
         }
       }
 
-      function loadEvaluateView() {
+      function loadEvaluateView(skipProcessing) {
         clearPanelMessage('evaluateMessage');
         document.getElementById('evaluateQuizList').innerHTML =
           '<div class="empty-state">Loading quizzes...</div>';
+        if (!skipProcessing) {
+          showProcessing('Loading quizzes...');
+        }
 
         google.script.run
-          .withSuccessHandler(renderEvaluateQuizList)
+          .withSuccessHandler(function(quizzes) {
+            if (!skipProcessing) {
+              hideProcessing();
+            }
+            renderEvaluateQuizList(quizzes);
+          })
           .withFailureHandler(function(err) {
+            hideProcessing();
             showPanelError('evaluateMessage', err);
             document.getElementById('evaluateQuizList').innerHTML =
               '<div class="empty-state">Could not load quizzes.</div>';
@@ -557,26 +730,27 @@
       }
 
       function runEvaluationForQuiz(quiz) {
-        var loading = document.getElementById('loading');
         var buttons = document.querySelectorAll('#evaluateQuizList button.primary');
 
         for (var i = 0; i < buttons.length; i++) {
           buttons[i].disabled = true;
         }
 
-        loading.style.display = 'block';
         clearPanelMessage('evaluateMessage');
+        showProcessing('Running batch evaluation...');
 
         google.script.run
           .withSuccessHandler(function(result) {
-            loading.style.display = 'none';
+            showDone('Done!');
             showPanelSuccess('evaluateMessage', result);
-            loadEvaluateView();
+            setTimeout(function() {
+              loadEvaluateView(true);
+            }, 750);
           })
           .withFailureHandler(function(err) {
-            loading.style.display = 'none';
+            hideProcessing();
             showPanelError('evaluateMessage', err);
-            loadEvaluateView();
+            loadEvaluateView(true);
           })
           .triggerEvaluation(quiz.quizId);
       }
@@ -587,10 +761,15 @@
         showReviewSubview('list');
         document.getElementById('reviewQuizList').innerHTML =
           '<div class="empty-state">Loading quizzes...</div>';
+        showProcessing('Loading quizzes...');
 
         google.script.run
-          .withSuccessHandler(renderReviewQuizList)
+          .withSuccessHandler(function(quizzes) {
+            hideProcessing();
+            renderReviewQuizList(quizzes);
+          })
           .withFailureHandler(function(err) {
+            hideProcessing();
             showPanelError('reviewListMessage', err);
             document.getElementById('reviewQuizList').innerHTML =
               '<div class="empty-state">Could not load quizzes.</div>';
@@ -659,14 +838,18 @@
         reviewState.quiz = quiz;
         reviewState.currentIndex = 0;
         reviewState.editing = false;
+        reviewState.imageCache = {};
+        showProcessing('Loading evaluations...');
 
         google.script.run
           .withSuccessHandler(function(items) {
             reviewState.items = items;
             showReviewSubview('detail');
             renderCurrentReview();
+            hideProcessing();
           })
           .withFailureHandler(function(err) {
+            hideProcessing();
             showPanelError('reviewListMessage', err);
           })
           .getEvaluationsForQuiz(quiz.quizId);
@@ -682,6 +865,19 @@
         loadReviewQuizList();
       }
 
+      function syncReviewNavButtons(isFirst, isLast, editing) {
+        var prevButtons = document.querySelectorAll('[data-review-nav="prev"]');
+        var nextButtons = document.querySelectorAll('[data-review-nav="next"]');
+        var i;
+
+        for (i = 0; i < prevButtons.length; i++) {
+          prevButtons[i].disabled = editing || isFirst;
+        }
+        for (i = 0; i < nextButtons.length; i++) {
+          nextButtons[i].disabled = editing || isLast;
+        }
+      }
+
       function renderCurrentReview() {
         var item = reviewState.items[reviewState.currentIndex];
         var total = reviewState.items.length;
@@ -690,21 +886,51 @@
 
         document.getElementById('reviewQuizTitle').textContent = reviewState.quiz.quizName;
         document.getElementById('reviewPositionMeta').textContent =
-          'Student: ' + item.studentName +
-          ' · Question ' + item.questionNumber +
-          ' · Evaluation ' + (reviewState.currentIndex + 1) + ' of ' + total +
+          'Evaluation ' + (reviewState.currentIndex + 1) + ' of ' + total +
           (item.questionId ? ' · Question ID: ' + item.questionId : '');
+        document.getElementById('reviewCurrentBanner').textContent =
+          'Now viewing: ' + item.studentName + ' · Question ' + item.questionNumber + ' of quiz';
 
         var questionText = item.qPrompt || item.questionText || '';
         document.getElementById('reviewQuestion').textContent = questionText || '(Question text not found for this evaluation)';
-        setQuestionImage(document.getElementById('reviewQuestionImage'), item.imageData || '');
+        document.getElementById('reviewFooterStudent').textContent = item.studentName || '';
+        document.getElementById('reviewFooterQuestion').textContent =
+          questionText || '(Question text not found for this evaluation)';
+        loadReviewQuestionImage(item);
         document.getElementById('reviewRubric').textContent = item.rubricText || '';
         document.getElementById('reviewAnswer').textContent = item.answerText || '';
         document.getElementById('reviewEvaluation').value = item.evaluationText || '';
 
-        document.getElementById('reviewPrevBtn').disabled = isFirst;
-        document.getElementById('reviewNextBtn').disabled = isLast;
+        syncReviewNavButtons(isFirst, isLast, false);
         setEditMode(false);
+      }
+
+      function loadReviewQuestionImage(item) {
+        var imgEl = document.getElementById('reviewQuestionImage');
+        setQuestionImage(imgEl, '');
+
+        if (!item.hasImage || !item.questionId) {
+          return;
+        }
+
+        var cacheKey = item.questionId;
+        if (reviewState.imageCache[cacheKey]) {
+          setQuestionImage(imgEl, reviewState.imageCache[cacheKey]);
+          return;
+        }
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            if (result.imageData) {
+              reviewState.imageCache[cacheKey] = result.imageData;
+            }
+            var current = reviewState.items[reviewState.currentIndex];
+            if (current && current.questionId === item.questionId) {
+              setQuestionImage(imgEl, result.imageData || '');
+            }
+          })
+          .withFailureHandler(function() {})
+          .getQuestionImage(reviewState.quiz.quizId, item.questionId);
       }
 
       function goToReviewPrevious() {
@@ -747,9 +973,11 @@
         evaluationField.classList.toggle('editing', editing);
         document.getElementById('reviewEditBtn').style.display = editing ? 'none' : 'inline-block';
         document.getElementById('reviewEditActions').classList.toggle('visible', editing);
-        document.getElementById('reviewPrevBtn').disabled = editing || reviewState.currentIndex === 0;
-        document.getElementById('reviewNextBtn').disabled =
-          editing || reviewState.currentIndex >= reviewState.items.length - 1;
+        syncReviewNavButtons(
+          reviewState.currentIndex === 0,
+          reviewState.currentIndex >= reviewState.items.length - 1,
+          editing
+        );
       }
 
       function saveEvaluation() {
@@ -764,9 +992,11 @@
 
         saveBtn.disabled = true;
         clearPanelMessage('reviewDetailMessage');
+        showProcessing('Saving changes...');
 
         google.script.run
           .withSuccessHandler(function(result) {
+            hideProcessing();
             saveBtn.disabled = false;
             item.evaluationText = evaluationText;
             reviewState.originalEvaluation = evaluationText;
@@ -774,76 +1004,11 @@
             showPanelSuccess('reviewDetailMessage', result);
           })
           .withFailureHandler(function(err) {
+            hideProcessing();
             saveBtn.disabled = false;
             showPanelError('reviewDetailMessage', err);
           })
           .updateEvaluation(item.row, evaluationText);
-      }
-
-      function logToSheet(level, source, message, details) {
-        google.script.run
-          .withFailureHandler(function() {})
-          .logFromClient(level, source, message, JSON.stringify(details || {}));
-      }
-
-      function uploadQuestionImage(row, questionId, quizId, imageData, onSuccess, onError) {
-        var parts = [];
-        for (var i = 0; i < imageData.length; i += IMAGE_UPLOAD_CHUNK_SIZE) {
-          parts.push(imageData.substring(i, i + IMAGE_UPLOAD_CHUNK_SIZE));
-        }
-
-        logToSheet('info', 'client', 'begin image upload', {
-          row: row,
-          questionId: questionId,
-          quizId: quizId,
-          imageLength: imageData.length,
-          partCount: parts.length
-        });
-
-        function sendPart(index) {
-          if (index >= parts.length) {
-            google.script.run
-              .withSuccessHandler(onSuccess)
-              .withFailureHandler(function(err) {
-                logToSheet('error', 'client', 'finalizeQuestionImageUpload failed', {
-                  row: row,
-                  questionId: questionId,
-                  message: err.message || String(err)
-                });
-                onError(err);
-              })
-              .finalizeQuestionImageUpload(row, parts.length, questionId, quizId);
-            return;
-          }
-
-          google.script.run
-            .withSuccessHandler(function() {
-              sendPart(index + 1);
-            })
-            .withFailureHandler(function(err) {
-              logToSheet('error', 'client', 'uploadQuestionImagePart failed', {
-                row: row,
-                partIndex: index,
-                message: err.message || String(err)
-              });
-              onError(err);
-            })
-            .uploadQuestionImagePart(row, index, parts[index]);
-        }
-
-        google.script.run
-          .withSuccessHandler(function() {
-            sendPart(0);
-          })
-          .withFailureHandler(function(err) {
-            logToSheet('error', 'client', 'beginQuestionImageUpload failed', {
-              row: row,
-              questionId: questionId,
-              message: err.message || String(err)
-            });
-            onError(err);
-          })
-          .beginQuestionImageUpload(row, parts.length, imageData.length, questionId, quizId);
       }
 
       function readQuestionImageFile(input, onReady, onError) {
@@ -931,76 +1096,35 @@
         }
 
         function submitQuestion(imageData) {
-          logToSheet('info', 'client', 'submitQuestion', {
-            hasImageData: !!imageData,
-            imageLength: imageData ? imageData.length : 0,
-            hadFile: hadFile,
-            hadPending: hadPending,
-            pendingLength: pendingQuestionImageData ? pendingQuestionImageData.length : 0
-          });
-
           if (!imageData && (hadFile || hadPending)) {
             showPanelError('addMessage', {
-              message: 'The image could not be read from the file picker. Check the Logs sheet.'
+              message: 'The image could not be read from the file picker.'
             });
             return;
           }
 
           btn.disabled = true;
           clearPanelMessage('addMessage');
-
-          function finishSave(result, imageMessage) {
-            btn.disabled = false;
-            document.getElementById('addForm').reset();
-            clearQuestionImage();
-            var text = result.message;
-            if (imageMessage) {
-              text += ' ' + imageMessage;
-            }
-            showPanelSuccess('addMessage', text);
-          }
+          showProcessing('Saving question...');
 
           google.script.run
             .withSuccessHandler(function(result) {
-              if (!imageData) {
-                finishSave(result, '');
-                return;
-              }
-
-              uploadQuestionImage(
-                result.row,
-                result.questionId,
-                result.quizId,
-                imageData,
-                function(imageResult) {
-                if (!imageResult || !imageResult.imageSaved) {
-                  btn.disabled = false;
-                  showPanelError('addMessage', {
-                    message: result.message +
-                      ' However, the image was not saved. Check the Logs sheet.'
-                  });
-                  return;
-                }
-                finishSave(result, 'Image saved (' + imageResult.imageBytes + ' characters).');
-              }, function(err) {
-                btn.disabled = false;
-                showPanelError('addMessage', {
-                  message: result.message + ' However, the image could not be saved: ' +
-                    (err.message || String(err)) + ' Check the Logs sheet.'
-                });
-              });
+              showDone('Done!');
+              btn.disabled = false;
+              document.getElementById('addForm').reset();
+              clearQuestionImage();
+              showPanelSuccess('addMessage', result.message);
             })
             .withFailureHandler(function(err) {
+              hideProcessing();
               btn.disabled = false;
-              logToSheet('error', 'client', 'addQuestionAndRubric failed', {
-                message: err.message || String(err)
-              });
               showPanelError('addMessage', err);
             })
             .addQuestionAndRubric({
               quizName: quizName,
               question: question,
-              rubric: rubric
+              rubric: rubric,
+              imageData: imageData || ''
             });
         }
 

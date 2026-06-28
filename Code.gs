@@ -6,6 +6,7 @@ function onOpen() {
     .addItem('Open Logs', 'openLogsSheet')
     .addItem('Authorize API access (run once)', 'authorizeExternalRequests')
     .addItem('Run AI Evaluation', 'runEvaluationWithAlert')
+    .addItem('Seed Histogram Pilot Quiz', 'seedHistogramPilotQuizWithAlert')
     .addToUi();
 }
 
@@ -38,6 +39,10 @@ function runEvaluationWithAlert() {
     SpreadsheetApp.getUi().alert('Evaluation failed:\n\n' + error.message);
   }
 }
+
+var EVAL_BATCH_SIZE_ = 15;
+var EVAL_BATCH_MAX_TOKENS_ = 8192;
+var EVAL_MODEL_ = 'claude-haiku-4-5-20251001';
 
 function ensureResponsesHeaders_(sheet) {
   if (sheet.getRange('A1').getValue() === 'Timestamp') {
@@ -303,16 +308,22 @@ function ensureQuestionIds_(questionsSheet) {
 
   var existing = collectExistingIds_(questionsSheet, 'F');
   var rows = questionsSheet.getRange('B2:F' + lastRow).getValues();
+  var idValues = questionsSheet.getRange('F2:F' + lastRow).getValues();
+  var changed = false;
 
   for (var i = 0; i < rows.length; i++) {
     if (!rows[i][0]) {
       continue;
     }
-    if (String(rows[i][4]).trim()) {
+    if (String(idValues[i][0]).trim()) {
       continue;
     }
-    var questionId = generateUniqueId_(existing);
-    questionsSheet.getRange('F' + (i + 2)).setValue(questionId);
+    idValues[i][0] = generateUniqueId_(existing);
+    changed = true;
+  }
+
+  if (changed) {
+    questionsSheet.getRange('F2:F' + lastRow).setValues(idValues);
   }
 }
 
@@ -337,26 +348,29 @@ function findQuizIdByName_(questionsSheet, quizName) {
   return '';
 }
 
-function getQuestionAndRubricForRow_(questionsSheet, row) {
+function getQuestionAndRubricForRow_(questionsSheet, row, skipImages) {
   if (!questionsSheet) {
     throw new Error('Questions sheet not found.');
   }
-  var ss = questionsSheet.getParent();
-  var imageMap = buildQuestionImageMap_(ss);
   var questionId = questionsSheet.getRange('F' + row).getValue();
   var quizId = questionsSheet.getRange('E' + row).getValue();
   var legacyImage = questionsSheet.getRange('G' + row).getValue();
+  var imageData = '';
+  if (!skipImages) {
+    var ss = questionsSheet.getParent();
+    imageData = readQuestionImageDataForQuestion_(ss, questionId, quizId, legacyImage);
+  }
   return {
     question: questionsSheet.getRange('B' + row).getValue(),
     rubric: questionsSheet.getRange('C' + row).getValue(),
     quizName: questionsSheet.getRange('D' + row).getValue(),
     quizId: quizId,
     questionId: questionId,
-    imageData: readQuestionImageData_(imageMap, legacyImage, questionId, quizId)
+    imageData: imageData
   };
 }
 
-function getQuestionAndRubricByQuestionId_(questionsSheet, questionId, quizId) {
+function getQuestionAndRubricByQuestionId_(questionsSheet, questionId, quizId, skipImages) {
   ensureQuestionsHeaders_(questionsSheet);
   questionId = normalizeSheetId_(questionId);
   quizId = normalizeSheetId_(quizId);
@@ -372,7 +386,7 @@ function getQuestionAndRubricByQuestionId_(questionsSheet, questionId, quizId) {
   }
 
   var rows = questionsSheet.getRange('A2:G' + lastRow).getValues();
-  var imageMap = buildQuestionImageMap_(questionsSheet.getParent());
+  var ss = questionsSheet.getParent();
   var fallback = null;
 
   for (var i = 0; i < rows.length; i++) {
@@ -383,12 +397,9 @@ function getQuestionAndRubricByQuestionId_(questionsSheet, questionId, quizId) {
     var entry = {
       questionText: cellText_(rows[i][1]),
       rubricText: cellText_(rows[i][2]),
-      imageData: readQuestionImageData_(
-        imageMap,
-        rows[i][6],
-        questionId,
-        normalizeSheetId_(rows[i][4])
-      ),
+      imageData: skipImages
+        ? ''
+        : readQuestionImageDataForQuestion_(ss, questionId, normalizeSheetId_(rows[i][4]), rows[i][6]),
       quizName: cellText_(rows[i][3]),
       quizId: normalizeSheetId_(rows[i][4]),
       questionId: questionId
@@ -586,6 +597,68 @@ function readQuestionImageData_(imageMap, legacyCellValue, questionId, quizId) {
   return '';
 }
 
+function questionHasImageMarker_(legacyCellValue) {
+  var legacy = cellText_(legacyCellValue).trim();
+  if (/^PARTS:\d+$/i.test(legacy)) {
+    return true;
+  }
+  return /^data:image\//i.test(legacy);
+}
+
+function readQuestionImageDataForQuestion_(ss, questionId, quizId, legacyCellValue) {
+  var legacy = cellText_(legacyCellValue).trim();
+  if (legacy && /^data:image\//i.test(legacy)) {
+    return legacy;
+  }
+
+  questionId = normalizeSheetId_(questionId);
+  quizId = normalizeSheetId_(quizId);
+  if (!questionId) {
+    return '';
+  }
+
+  var sheet = ss.getSheetByName('QuestionImages');
+  if (!sheet) {
+    return '';
+  }
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    return '';
+  }
+
+  var rows = sheet.getRange('A2:D' + lastRow).getValues();
+  var parts = [];
+
+  for (var i = 0; i < rows.length; i++) {
+    if (normalizeSheetId_(rows[i][0]) !== questionId) {
+      continue;
+    }
+    if (quizId && normalizeSheetId_(rows[i][1]) !== quizId) {
+      continue;
+    }
+    parts.push({
+      part: Number(rows[i][2]) || 0,
+      data: cellText_(rows[i][3])
+    });
+  }
+
+  if (!parts.length) {
+    return '';
+  }
+
+  parts.sort(function(a, b) {
+    return a.part - b.part;
+  });
+
+  var joined = '';
+  for (var j = 0; j < parts.length; j++) {
+    joined += parts[j].data;
+  }
+
+  return joined;
+}
+
 function questionHasStoredImage_(imageMap, legacyCellValue, questionId, quizId) {
   if (readQuestionImageData_(imageMap, legacyCellValue, questionId, quizId)) {
     return true;
@@ -601,7 +674,6 @@ function lookupQuestionImageData_(quizId, questionId) {
   }
 
   var ss = getQuizSpreadsheet_();
-  var imageMap = buildQuestionImageMap_(ss);
   var questionsSheet = ss.getSheetByName('Questions');
   var legacy = '';
 
@@ -619,7 +691,7 @@ function lookupQuestionImageData_(quizId, questionId) {
     }
   }
 
-  return readQuestionImageData_(imageMap, legacy, questionId, quizId);
+  return readQuestionImageDataForQuestion_(ss, questionId, quizId, legacy);
 }
 
 function getQuestionImage(quizId, questionId) {
@@ -662,20 +734,6 @@ function writeQuestionImageToSheet_(questionsSheet, row, questionId, quizId, ima
 
   questionsSheet.getRange(row, 7).setValue(chunks.length ? ('PARTS:' + chunks.length) : '');
   SpreadsheetApp.flush();
-
-  var saved = readQuestionImageData_(buildQuestionImageMap_(ss), '', questionId, quizId);
-  logQuizEvent_('info', 'writeQuestionImageToSheet_', 'stored image', {
-    row: row,
-    questionId: questionId,
-    quizId: quizId,
-    partCount: chunks.length,
-    savedLength: saved.length,
-    expectedLength: imageData.length
-  });
-
-  if (saved.length !== imageData.length) {
-    throw new Error('Image could not be stored in the sheet. See the Logs tab for details.');
-  }
 
   return { partCount: chunks.length, imageBytes: imageData.length };
 }
@@ -753,14 +811,6 @@ function beginQuestionImageUpload(row, partCount, totalLength, questionId, quizI
   questionId = normalizeSheetId_(questionId);
   quizId = normalizeSheetId_(quizId);
 
-  logQuizEvent_('info', 'beginQuestionImageUpload', 'starting upload', {
-    row: row,
-    partCount: partCount,
-    totalLength: totalLength,
-    questionId: questionId,
-    quizId: quizId
-  });
-
   if (!row || row < 2) {
     throw new Error('Invalid question row.');
   }
@@ -790,12 +840,6 @@ function uploadQuestionImagePart(row, partIndex, partData) {
   row = Number(row);
   partIndex = Number(partIndex);
 
-  logQuizEvent_('info', 'uploadQuestionImagePart', 'received part', {
-    row: row,
-    partIndex: partIndex,
-    partLength: partData ? String(partData).length : 0
-  });
-
   if (!row || row < 2) {
     throw new Error('Invalid question row.');
   }
@@ -817,16 +861,29 @@ function uploadQuestionImagePart(row, partIndex, partData) {
   return { ok: true, row: row, partIndex: partIndex, partLength: partData.length };
 }
 
+function uploadQuestionImageParts(row, startIndex, partsJson) {
+  row = Number(row);
+  startIndex = Number(startIndex);
+  var parts;
+  try {
+    parts = JSON.parse(partsJson);
+  } catch (parseError) {
+    throw new Error('Image upload payload is invalid.');
+  }
+  if (!parts || !parts.length) {
+    throw new Error('Image upload payload is empty.');
+  }
+
+  for (var i = 0; i < parts.length; i++) {
+    uploadQuestionImagePart(row, startIndex + i, parts[i]);
+  }
+
+  return { ok: true, row: row, startIndex: startIndex, count: parts.length };
+}
+
 function finalizeQuestionImageUpload(row, partCount, questionId, quizId) {
   row = Number(row);
   partCount = Number(partCount);
-
-  logQuizEvent_('info', 'finalizeQuestionImageUpload', 'assembling image', {
-    row: row,
-    partCount: partCount,
-    questionId: questionId,
-    quizId: quizId
-  });
 
   if (!row || row < 2) {
     throw new Error('Invalid question row.');
@@ -874,11 +931,6 @@ function finalizeQuestionImageUpload(row, partCount, questionId, quizId) {
   }
 
   var assembled = parts.join('');
-  logQuizEvent_('info', 'finalizeQuestionImageUpload', 'assembled image', {
-    row: row,
-    assembledLength: assembled.length,
-    expectedLength: meta.totalLength
-  });
 
   if (meta.totalLength && assembled.length !== meta.totalLength) {
     logQuizEvent_('error', 'finalizeQuestionImageUpload', 'assembled length mismatch', {
@@ -931,7 +983,7 @@ function getIdsFromResponseRow_(responsesSheet, row) {
   };
 }
 
-function getQuestionBankForQuiz_(questionsSheet, quizId) {
+function getQuestionBankForQuiz_(questionsSheet, quizId, skipImages) {
   ensureQuestionsHeaders_(questionsSheet);
   ensureQuestionIds_(questionsSheet);
 
@@ -943,7 +995,7 @@ function getQuestionBankForQuiz_(questionsSheet, quizId) {
   }
 
   var rows = questionsSheet.getRange('A2:G' + lastRow).getValues();
-  var imageMap = buildQuestionImageMap_(questionsSheet.getParent());
+  var ss = questionsSheet.getParent();
   var number = 0;
 
   for (var i = 0; i < rows.length; i++) {
@@ -957,7 +1009,10 @@ function getQuestionBankForQuiz_(questionsSheet, quizId) {
     bank[questionId] = {
       questionText: cellText_(rows[i][1]),
       rubricText: cellText_(rows[i][2]),
-      imageData: readQuestionImageData_(imageMap, rows[i][6], questionId, rowQuizId),
+      imageData: skipImages
+        ? ''
+        : readQuestionImageDataForQuestion_(ss, questionId, rowQuizId, rows[i][6]),
+      hasImage: questionHasImageMarker_(rows[i][6]),
       questionNumber: number
     };
   }
@@ -1020,7 +1075,6 @@ function findQuestionById_(questionsSheet, questionId, quizId, questionBank) {
 
   var values = questionsSheet.getRange('A2:G' + lastRow).getValues();
   var questionDisplay = questionsSheet.getRange('B2:B' + lastRow).getDisplayValues();
-  var imageMap = buildQuestionImageMap_(questionsSheet.getParent());
   var fallback = null;
 
   for (var i = 0; i < values.length; i++) {
@@ -1031,16 +1085,15 @@ function findQuestionById_(questionsSheet, questionId, quizId, questionBank) {
     var entry = {
       questionText: cellText_(questionDisplay[i][0] || values[i][1]),
       rubricText: cellText_(values[i][2]),
-      imageData: readQuestionImageData_(
-        imageMap,
-        values[i][6],
-        questionId,
-        normalizeSheetId_(values[i][4])
-      ),
+      imageData: '',
+      hasImage: questionHasImageMarker_(values[i][6]),
+      quizName: cellText_(values[i][3]),
+      quizId: normalizeSheetId_(values[i][4]),
+      questionId: questionId,
       questionNumber: 999
     };
 
-    if (!quizId || normalizeSheetId_(values[i][4]) === quizId) {
+    if (!quizId || entry.quizId === quizId) {
       return entry;
     }
 
@@ -1052,8 +1105,7 @@ function findQuestionById_(questionsSheet, questionId, quizId, questionBank) {
   return fallback;
 }
 
-function resolveEvalRowIds_(evalRowData, responsesSheet, evalRow, selectedQuizId) {
-  var responseIds = getIdsFromResponseRow_(responsesSheet, evalRow);
+function resolveEvalRowIds_(evalRowData, responseIds, selectedQuizId) {
   var questionId = resolveQuestionIdForEval_(evalRowData, responseIds, selectedQuizId);
   var evalQuizId = normalizeSheetId_(evalRowData[6]);
   var quizId = evalQuizId || responseIds.quizId;
@@ -1098,11 +1150,13 @@ function getQuestionInfo() {
 }
 
 function addQuestionAndRubric(quizNameOrPayload, question, rubric) {
+  var imageData = '';
   var quizName;
   if (quizNameOrPayload && typeof quizNameOrPayload === 'object') {
     quizName = quizNameOrPayload.quizName;
     question = quizNameOrPayload.question;
     rubric = quizNameOrPayload.rubric;
+    imageData = quizNameOrPayload.imageData || '';
   } else {
     quizName = quizNameOrPayload;
   }
@@ -1121,10 +1175,14 @@ function addQuestionAndRubric(quizNameOrPayload, question, rubric) {
     throw new Error('Rubric is required.');
   }
 
+  var photoData = '';
+  if (imageData) {
+    photoData = prepareQuestionImageData_(imageData);
+  }
+
   var ss = getQuizSpreadsheet_();
   var questionsSheet = ensureSheet_(ss, 'Questions');
   ensureQuestionsHeaders_(questionsSheet);
-  ensureQuestionImagesSheet_(ss);
 
   var quizId = findQuizIdByName_(questionsSheet, quizName);
   var isNewQuiz = !quizId;
@@ -1134,15 +1192,9 @@ function addQuestionAndRubric(quizNameOrPayload, question, rubric) {
 
   var row = getNextQuestionsRow_(questionsSheet);
   var questionId = generateUniqueQuestionId_(questionsSheet);
-  questionsSheet.appendRow([row, question, rubric, quizName, quizId, questionId, '']);
+  questionsSheet.appendRow([row, question, rubric, quizName, quizId, questionId, photoData]);
 
   SpreadsheetApp.flush();
-  logQuizEvent_('info', 'addQuestionAndRubric', 'question saved', {
-    row: row,
-    quizId: quizId,
-    questionId: questionId,
-    quizName: quizName
-  });
 
   var message = 'Question saved in row ' + row + '.';
   if (isNewQuiz) {
@@ -1151,6 +1203,9 @@ function addQuestionAndRubric(quizNameOrPayload, question, rubric) {
     message += ' Using existing quiz ID: ' + quizId + '.';
   }
   message += ' Question ID: ' + questionId + '.';
+  if (photoData) {
+    message += ' Image saved (' + photoData.length + ' characters).';
+  }
 
   return {
     row: row,
@@ -1158,6 +1213,8 @@ function addQuestionAndRubric(quizNameOrPayload, question, rubric) {
     quizId: quizId,
     questionId: questionId,
     isNewQuiz: isNewQuiz,
+    imageSaved: !!photoData,
+    imageBytes: photoData ? photoData.length : 0,
     message: message
   };
 }
@@ -1282,19 +1339,32 @@ function getEvaluationsForQuiz(quizId) {
   ensureQuestionsHeaders_(questionsSheet);
   ensureEvaluationsHeaders_(evalSheet);
 
-  var questionBank = getQuestionBankForQuiz_(questionsSheet, quizId);
+  var questionBank = getQuestionBankForQuiz_(questionsSheet, quizId, true);
   if (!Object.keys(questionBank).length) {
     throw new Error('No questions found for that quiz.');
   }
 
   var lastRow = evalSheet.getLastRow();
   var rows = evalSheet.getRange('A2:G' + lastRow).getValues();
+  var responseRows = [];
+  if (responsesSheet && responsesSheet.getLastRow() >= 2) {
+    ensureResponsesHeaders_(responsesSheet);
+    responseRows = responsesSheet.getRange('A2:F' + responsesSheet.getLastRow()).getValues();
+  }
   var items = [];
+  var idBackfillRows = [];
+  var idBackfillValues = [];
 
   for (var i = 0; i < rows.length; i++) {
     var evalRow = i + 2;
-    var responseIds = getIdsFromResponseRow_(responsesSheet, evalRow);
-    var ids = resolveEvalRowIds_(rows[i], responsesSheet, evalRow, quizId);
+    var responseIds = { questionId: '', quizId: '' };
+    if (evalRow - 2 < responseRows.length) {
+      responseIds = {
+        questionId: normalizeSheetId_(responseRows[evalRow - 2][4]),
+        quizId: normalizeSheetId_(responseRows[evalRow - 2][5])
+      };
+    }
+    var ids = resolveEvalRowIds_(rows[i], responseIds, quizId);
     var rowQuizId = ids.quizId;
     var questionId = ids.questionId;
 
@@ -1312,7 +1382,8 @@ function getEvaluationsForQuiz(quizId) {
     }
 
     if (!normalizeSheetId_(rows[i][5]) && questionId) {
-      evalSheet.getRange('F' + evalRow).setValue(questionId);
+      idBackfillRows.push(evalRow);
+      idBackfillValues.push([questionId]);
     }
     if (!normalizeSheetId_(rows[i][6]) && rowQuizId) {
       evalSheet.getRange('G' + evalRow).setValue(rowQuizId);
@@ -1320,16 +1391,9 @@ function getEvaluationsForQuiz(quizId) {
 
     var details = findQuestionById_(questionsSheet, questionId, quizId, questionBank);
     if (!details || !details.questionText) {
-      var rowAligned = getQuestionAndRubricForRow_(questionsSheet, evalRow);
-      if (cellText_(rowAligned.question)) {
-        details = {
-          questionText: cellText_(rowAligned.question),
-          rubricText: cellText_(rowAligned.rubric),
-          imageData: cellText_(rowAligned.imageData),
-          questionNumber: lookupQuestionInBank_(questionBank, questionId)
-            ? lookupQuestionInBank_(questionBank, questionId).questionNumber
-            : 999
-        };
+      var bankEntry = lookupQuestionInBank_(questionBank, questionId);
+      if (bankEntry) {
+        details = bankEntry;
       }
     }
 
@@ -1344,9 +1408,16 @@ function getEvaluationsForQuiz(quizId) {
       quizId: rowQuizId,
       qPrompt: details ? details.questionText : '',
       questionText: details ? details.questionText : '',
-      imageData: details ? details.imageData : '',
+      hasImage: details ? !!details.hasImage : false,
+      imageData: '',
       questionNumber: details ? details.questionNumber : 999
     });
+  }
+
+  if (idBackfillRows.length) {
+    for (var b = 0; b < idBackfillRows.length; b++) {
+      evalSheet.getRange('F' + idBackfillRows[b]).setValue(idBackfillValues[b][0]);
+    }
   }
 
   SpreadsheetApp.flush();
@@ -1407,7 +1478,6 @@ function getQuestionsForQuiz(quizId) {
 
   ensureQuestionsHeaders_(questionsSheet);
   ensureQuestionIds_(questionsSheet);
-  ensureQuestionImagesSheet_(ss);
 
   var lastRow = questionsSheet.getLastRow();
   if (lastRow < 2) {
@@ -1416,7 +1486,6 @@ function getQuestionsForQuiz(quizId) {
 
   var rows = questionsSheet.getRange('A2:G' + lastRow).getValues();
   var questionDisplay = questionsSheet.getRange('B2:B' + lastRow).getDisplayValues();
-  var imageMap = buildQuestionImageMap_(ss);
   var questions = [];
 
   for (var i = 0; i < rows.length; i++) {
@@ -1431,7 +1500,7 @@ function getQuestionsForQuiz(quizId) {
     questions.push({
       questionId: questionId,
       questionText: questionText,
-      hasImage: questionHasStoredImage_(imageMap, rows[i][6], questionId, rowQuizId),
+      hasImage: questionHasImageMarker_(rows[i][6]),
       number: questions.length + 1
     });
   }
@@ -1441,6 +1510,15 @@ function getQuestionsForQuiz(quizId) {
   }
 
   return questions;
+}
+
+function getQuestionIdsForQuiz_(quizId) {
+  var questions = getQuestionsForQuiz(quizId);
+  var ids = {};
+  for (var i = 0; i < questions.length; i++) {
+    ids[questions[i].questionId] = true;
+  }
+  return ids;
 }
 
 function submitQuiz(studentName, quizId, answers) {
@@ -1460,11 +1538,7 @@ function submitQuiz(studentName, quizId, answers) {
     throw new Error('No answers to submit.');
   }
 
-  var quizQuestions = getQuestionsForQuiz(quizId);
-  var expectedIds = {};
-  for (var i = 0; i < quizQuestions.length; i++) {
-    expectedIds[quizQuestions[i].questionId] = true;
-  }
+  var expectedIds = getQuestionIdsForQuiz_(quizId);
 
   var submittedIds = {};
   for (var j = 0; j < answers.length; j++) {
@@ -1497,8 +1571,9 @@ function submitQuiz(studentName, quizId, answers) {
   ensureResponsesHeaders_(sheet);
 
   var timestamp = new Date();
+  var newRows = [];
   for (var k = 0; k < answers.length; k++) {
-    sheet.appendRow([
+    newRows.push([
       timestamp,
       studentName,
       String(answers[k].answer).trim(),
@@ -1508,19 +1583,282 @@ function submitQuiz(studentName, quizId, answers) {
     ]);
   }
 
+  var startRow = sheet.getLastRow() + 1;
+  sheet.getRange('A' + startRow + ':F' + (startRow + newRows.length - 1)).setValues(newRows);
+
   SpreadsheetApp.flush();
   return 'Quiz submitted successfully! ' + answers.length + ' answer(s) saved with Pending status.';
 }
 
-function triggerEvaluation(quizId) {
-  // Set ANTHROPIC_API_KEY in Apps Script: Project Settings > Script Properties.
-  quizId = quizId ? String(quizId).trim() : '';
+function getAnthropicApiKey_() {
   var anthropicApiKey = PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
   if (!anthropicApiKey) {
     throw new Error(
       'ANTHROPIC_API_KEY is not set. Add it in Apps Script Project Settings under Script Properties.'
     );
   }
+  return anthropicApiKey;
+}
+
+function chunkArray_(items, chunkSize) {
+  var chunks = [];
+  chunkSize = Number(chunkSize) || 1;
+  for (var i = 0; i < items.length; i += chunkSize) {
+    chunks.push(items.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
+function extractJsonFromModelText_(text) {
+  var raw = String(text || '').trim();
+  if (!raw) {
+    throw new Error('Model returned empty text.');
+  }
+
+  if (raw.indexOf('```') !== -1) {
+    var fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenceMatch && fenceMatch[1]) {
+      raw = fenceMatch[1].trim();
+    }
+  }
+
+  var start = raw.indexOf('[');
+  var end = raw.lastIndexOf(']');
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('Model response did not include a JSON array.');
+  }
+
+  return JSON.parse(raw.substring(start, end + 1));
+}
+
+function formatBatchEvaluationText_(score, feedback) {
+  var scoreText = score === '' || score == null ? '' : 'Score: ' + score + '/10';
+  feedback = String(feedback || '').trim();
+  if (scoreText && feedback) {
+    return scoreText + '\n\n' + feedback;
+  }
+  if (scoreText) {
+    return scoreText;
+  }
+  return feedback || '(no feedback returned)';
+}
+
+function collectPendingResponsesByQuestion_(allResponses, quizId) {
+  quizId = quizId ? String(quizId).trim() : '';
+  var groups = {};
+  var questionOrder = [];
+
+  for (var i = 0; i < allResponses.length; i++) {
+    var rowData = allResponses[i];
+    var status = rowData[3];
+    var questionId = normalizeSheetId_(rowData[4]);
+    var rowQuizId = normalizeSheetId_(rowData[5]);
+    var studentName = cellText_(rowData[1]).trim();
+    var answer = cellText_(rowData[2]).trim();
+
+    if (quizId && rowQuizId !== quizId) {
+      continue;
+    }
+    if (!isPendingStatus_(status)) {
+      continue;
+    }
+    if (!studentName && !answer) {
+      continue;
+    }
+
+    var groupKey = rowQuizId + '|' + questionId;
+    if (!groups[groupKey]) {
+      groups[groupKey] = {
+        quizId: rowQuizId,
+        questionId: questionId,
+        entries: []
+      };
+      questionOrder.push(groupKey);
+    }
+
+    groups[groupKey].entries.push({
+      responseRow: i + 2,
+      timestamp: rowData[0],
+      studentName: studentName || 'Unknown student',
+      answer: answer || '(no answer provided)',
+      questionId: questionId,
+      quizId: rowQuizId
+    });
+  }
+
+  return {
+    groups: groups,
+    questionOrder: questionOrder
+  };
+}
+
+function sortQuestionGroupKeys_(questionOrder, groups, questionBank) {
+  function questionNumberForKey(groupKey) {
+    var group = groups[groupKey];
+    if (!group || !group.questionId) {
+      return 9999;
+    }
+    var entry = lookupQuestionInBank_(questionBank, group.questionId);
+    return entry ? entry.questionNumber : 9999;
+  }
+
+  questionOrder.sort(function(a, b) {
+    return questionNumberForKey(a) - questionNumberForKey(b);
+  });
+
+  return questionOrder;
+}
+
+function callAnthropicBatchGrade_(apiKey, question, rubric, entries) {
+  var studentPayload = [];
+  for (var i = 0; i < entries.length; i++) {
+    studentPayload.push({
+      id: String(entries[i].responseRow),
+      studentName: entries[i].studentName,
+      answer: entries[i].answer
+    });
+  }
+
+  var userMessage = [
+    'You are grading student quiz answers for ONE question. Apply the rubric consistently across all students.',
+    '',
+    'Question:',
+    question,
+    '',
+    'Rubric:',
+    rubric,
+    '',
+    'Students to grade (JSON):',
+    JSON.stringify(studentPayload),
+    '',
+    'Return ONLY valid JSON (no markdown fences) as an array with one object per student:',
+    '[{"id":"<response row id>","score":7,"feedback":"Brief feedback here."}, ...]',
+    '',
+    'Rules:',
+    '- Include exactly one object for every student in the input.',
+    '- Use the same id values from the input.',
+    '- score must be a number from 0 to 10.',
+    '- feedback should be 2-3 sentences.'
+  ].join('\n');
+
+  var payload = {
+    model: EVAL_MODEL_,
+    max_tokens: EVAL_BATCH_MAX_TOKENS_,
+    messages: [
+      {
+        role: 'user',
+        content: userMessage
+      }
+    ]
+  };
+
+  var response = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
+    method: 'post',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json'
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+
+  var responseBody = response.getContentText();
+  var responseData;
+  try {
+    responseData = JSON.parse(responseBody);
+  } catch (parseError) {
+    return {
+      ok: false,
+      error: 'API returned non-JSON: ' + responseBody.substring(0, 500)
+    };
+  }
+
+  if (response.getResponseCode() !== 200) {
+    return {
+      ok: false,
+      error: 'API error: ' + (responseData.error && responseData.error.message
+        ? responseData.error.message
+        : responseBody)
+    };
+  }
+
+  try {
+    var parsed = extractJsonFromModelText_(responseData.content[0].text);
+    return {
+      ok: true,
+      results: parsed
+    };
+  } catch (jsonError) {
+    return {
+      ok: false,
+      error: 'Could not parse model JSON: ' + jsonError.message,
+      raw: responseData.content && responseData.content[0] ? responseData.content[0].text : ''
+    };
+  }
+}
+
+function writeBatchEvaluationResults_(
+  evalSheet,
+  responsesSheet,
+  entries,
+  rubric,
+  questionId,
+  quizId,
+  batchResult
+) {
+  var resultMap = {};
+  var i;
+  var written = 0;
+
+  if (batchResult.ok) {
+    for (i = 0; i < batchResult.results.length; i++) {
+      var item = batchResult.results[i];
+      resultMap[String(item.id)] = item;
+    }
+  }
+
+  for (i = 0; i < entries.length; i++) {
+    var entry = entries[i];
+    var evaluationText;
+    var newStatus;
+
+    if (!batchResult.ok) {
+      evaluationText = batchResult.error;
+      newStatus = 'Error';
+    } else if (!resultMap[String(entry.responseRow)]) {
+      evaluationText = 'Missing from batch evaluation response.';
+      newStatus = 'Error';
+    } else {
+      var graded = resultMap[String(entry.responseRow)];
+      evaluationText = formatBatchEvaluationText_(graded.score, graded.feedback);
+      newStatus = 'Complete';
+    }
+
+    evalSheet.getRange('A' + entry.responseRow + ':G' + entry.responseRow).setValues([[
+      entry.timestamp,
+      entry.studentName,
+      entry.answer,
+      rubric,
+      evaluationText,
+      questionId,
+      quizId
+    ]]);
+    responsesSheet.getRange('D' + entry.responseRow).setValue(newStatus);
+    written++;
+  }
+
+  return written;
+}
+
+function triggerEvaluation(quizId) {
+  return triggerEvaluationByQuestion_(quizId);
+}
+
+function triggerEvaluationByQuestion_(quizId) {
+  // Set ANTHROPIC_API_KEY in Apps Script: Project Settings > Script Properties.
+  quizId = quizId ? String(quizId).trim() : '';
+  var anthropicApiKey = getAnthropicApiKey_();
 
   var ss = getQuizSpreadsheet_();
   var questionsSheet = ss.getSheetByName('Questions');
@@ -1534,132 +1872,82 @@ function triggerEvaluation(quizId) {
   }
 
   ensureResponsesHeaders_(responsesSheet);
-
   var evalSheet = ensureSheet_(ss, 'Evaluations');
   ensureEvaluationsHeaders_(evalSheet);
 
   var lastRow = responsesSheet.getLastRow();
-  var count = 0;
+  var allResponses = responsesSheet.getRange('A2:F' + lastRow).getValues();
+  var collected = collectPendingResponsesByQuestion_(allResponses, quizId);
+  var questionOrder = collected.questionOrder;
+  var groups = collected.groups;
 
-  for (var responseRow = 2; responseRow <= lastRow; responseRow++) {
-    var rowData = responsesSheet.getRange('A' + responseRow + ':F' + responseRow).getValues()[0];
-    var timestamp = rowData[0];
-    var studentName = rowData[1];
-    var answer = rowData[2];
-    var status = rowData[3];
-    var questionId = String(rowData[4] || '').trim();
-    var rowQuizId = String(rowData[5] || '').trim();
-
-    if (quizId && rowQuizId !== quizId) {
-      continue;
-    }
-
-    if (!isPendingStatus_(status)) {
-      continue;
-    }
-
-    if (!studentName && !answer) {
-      continue;
-    }
-
-    studentName = studentName || 'Unknown student';
-    answer = answer || '(no answer provided)';
-
-    var qr;
-    if (questionId) {
-      qr = getQuestionAndRubricByQuestionId_(questionsSheet, questionId, rowQuizId);
-    } else {
-      qr = getQuestionAndRubricForRow_(questionsSheet, responseRow);
-    }
-
-    var question = qr.question || qr.questionText;
-    var rubric = qr.rubric || qr.rubricText;
-    var evaluationText;
-    var newStatus;
-
-    if (!question && !rubric) {
-      var lookupHint = questionId
-        ? 'question ID ' + questionId + (rowQuizId ? ' in quiz ' + rowQuizId : '')
-        : 'Questions row ' + responseRow + ' (columns B and C)';
-      evaluationText = 'Skipped: no question or rubric found for ' + lookupHint + '.';
-      newStatus = 'Error';
-    } else {
-      var userMessage = [
-        'You are grading a student quiz answer.',
-        'Question: ' + question,
-        'Rubric: ' + rubric,
-        'Student answer: ' + answer,
-        'Score the answer out of 10 and provide brief feedback.'
-      ].join('\n');
-
-      var payload = {
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 300,
-        messages: [
-          {
-            role: 'user',
-            content: userMessage
-          }
-        ]
-      };
-
-      var response = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
-        method: 'post',
-        headers: {
-          'x-api-key': anthropicApiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json'
-        },
-        payload: JSON.stringify(payload),
-        muteHttpExceptions: true
-      });
-
-      var responseBody = response.getContentText();
-
-      try {
-        var responseData = JSON.parse(responseBody);
-        if (response.getResponseCode() !== 200) {
-          evaluationText = 'API error: ' + (responseData.error && responseData.error.message
-            ? responseData.error.message
-            : responseBody);
-          newStatus = 'Error';
-        } else {
-          evaluationText = responseData.content[0].text;
-          newStatus = 'Complete';
-        }
-      } catch (parseError) {
-        evaluationText = 'API error: ' + responseBody;
-        newStatus = 'Error';
-      }
-    }
-
-    evalSheet.getRange('A' + responseRow + ':G' + responseRow).setValues([[
-      timestamp,
-      studentName,
-      answer,
-      rubric,
-      evaluationText,
-      questionId,
-      rowQuizId
-    ]]);
-    responsesSheet.getRange('D' + responseRow).setValue(newStatus);
-    count++;
-  }
-
-  SpreadsheetApp.flush();
-
-  if (count === 0) {
+  if (!questionOrder.length) {
     if (quizId) {
       throw new Error('No Pending responses found to evaluate for this quiz.');
     }
     throw new Error('No Pending responses found to evaluate.');
   }
 
-  if (quizId) {
-    return 'AI evaluation completed for ' + count + ' Pending response(s) in this quiz. Check the Evaluations tab.';
+  var questionBank = quizId ? getQuestionBankForQuiz_(questionsSheet, quizId, true) : {};
+  questionOrder = sortQuestionGroupKeys_(questionOrder, groups, questionBank);
+
+  var totalWritten = 0;
+  var batchCalls = 0;
+  var g;
+
+  for (g = 0; g < questionOrder.length; g++) {
+    var groupKey = questionOrder[g];
+    var group = groups[groupKey];
+    var questionId = group.questionId;
+    var rowQuizId = group.quizId;
+
+    var qr = questionId
+      ? getQuestionAndRubricByQuestionId_(questionsSheet, questionId, rowQuizId, true)
+      : { questionText: '', rubricText: '' };
+    var question = qr.questionText || qr.question || '';
+    var rubric = qr.rubricText || qr.rubric || '';
+
+    var batches = chunkArray_(group.entries, EVAL_BATCH_SIZE_);
+    var b;
+
+    for (b = 0; b < batches.length; b++) {
+      var entries = batches[b];
+      var batchResult;
+
+      if (!question && !rubric) {
+        batchResult = {
+          ok: false,
+          error: 'Skipped: no question or rubric found for question ID ' +
+            (questionId || '(missing)') + '.'
+        };
+      } else {
+        batchResult = callAnthropicBatchGrade_(anthropicApiKey, question, rubric, entries);
+        batchCalls++;
+      }
+
+      totalWritten += writeBatchEvaluationResults_(
+        evalSheet,
+        responsesSheet,
+        entries,
+        rubric,
+        questionId,
+        rowQuizId,
+        batchResult
+      );
+    }
   }
 
-  return 'AI evaluation completed for ' + count + ' Pending response(s). Check the Evaluations tab.';
+  SpreadsheetApp.flush();
+
+  var summary = 'AI evaluation completed for ' + totalWritten +
+    ' Pending response(s) using question-first batching (' +
+    batchCalls + ' API call' + (batchCalls === 1 ? '' : 's') + '). Check the Evaluations tab.';
+
+  if (quizId) {
+    return summary;
+  }
+
+  return summary;
 }
 
 function debugQuizState() {
@@ -1683,4 +1971,149 @@ function escapeForFormula(text) {
     .replace(/\r?\n/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function seedHistogramPilotQuizWithAlert() {
+  try {
+    var result = seedHistogramPilotQuiz();
+    SpreadsheetApp.getUi().alert(
+      'Histogram pilot quiz created.\n\n' +
+      'Quiz: ' + result.quizName + '\n' +
+      'Quiz ID: ' + result.quizId + '\n' +
+      'Questions: ' + result.questionIds.join(', ') + '\n' +
+      'Pending responses: ' + result.responseCount
+    );
+  } catch (error) {
+    SpreadsheetApp.getUi().alert('Could not seed pilot quiz:\n\n' + error.message);
+  }
+}
+
+function seedHistogramPilotQuiz() {
+  var quizName = 'Histograms Pilot Quiz';
+  var ss = getQuizSpreadsheet_();
+  var questionsSheet = ensureSheet_(ss, 'Questions');
+  ensureQuestionsHeaders_(questionsSheet);
+  var responsesSheet = ensureSheet_(ss, 'Responses');
+  ensureResponsesHeaders_(responsesSheet);
+
+  if (findQuizIdByName_(questionsSheet, quizName)) {
+    throw new Error(
+      'A quiz named "' + quizName + '" already exists. Rename or delete it before seeding again.'
+    );
+  }
+
+  var quizId = generateUniqueQuizId_(questionsSheet);
+  var question1Id = generateUniqueQuestionId_(questionsSheet);
+  var question2Id = generateUniqueQuestionId_(questionsSheet);
+
+  var question1Text =
+    'The histogram summarizes pages read per week for 30 students. Bin counts: 0-10 pages: 8 students; ' +
+    '11-20 pages: 6 students; 21-30 pages: 4 students; 31-40 pages: 2 students; 41-50 pages: 1 student; ' +
+    '51-60 pages: 1 student. Describe the shape of this distribution. State whether it is symmetric, ' +
+    'skewed left, or skewed right. Identify the most common bin and explain what the tail shows.';
+
+  var question1Rubric =
+    'Score out of 10. (2 pts) States the distribution is unimodal. (3 pts) Correctly identifies right skew ' +
+    'and explains the tail extends toward higher page counts. (2 pts) Identifies 0-10 pages as the most common ' +
+    'bin with 8 students. (2 pts) Notes fewer students in higher bins forming the tail. (1 pt) Clear, complete ' +
+    'answer tied to the data. Deduct heavily for symmetric or left skew without evidence. Partial credit for ' +
+    'correct peak only.';
+
+  var question2Text =
+    'The histogram shows hours of sleep per night for 30 students. Bin counts: 4-5 hours: 2 students; ' +
+    '5-6 hours: 4 students; 6-7 hours: 9 students; 7-8 hours: 10 students; 8-9 hours: 4 students; ' +
+    '9-10 hours: 1 student. Describe the center and spread of this distribution. Give a reasonable typical ' +
+    'value and explain how much variability you see, using evidence from the bins.';
+
+  var question2Rubric =
+    'Score out of 10. (3 pts) Center estimate in the 6-8 hour range with justification from the highest bins ' +
+    '(6-7: 9 students, 7-8: 10 students). (3 pts) Describes spread/variability using the range across bins ' +
+    '(roughly 4-5 to 9-10 hours) or similar reasoning. (2 pts) Notes the distribution is approximately ' +
+    'symmetric. (2 pts) Cites specific bin counts as evidence. Partial credit for center OR spread alone.';
+
+  var row1 = getNextQuestionsRow_(questionsSheet);
+  var row2 = row1 + 1;
+  questionsSheet.getRange('A' + row1 + ':G' + row2).setValues([
+    [row1, question1Text, question1Rubric, quizName, quizId, question1Id, ''],
+    [row2, question2Text, question2Rubric, quizName, quizId, question2Id, '']
+  ]);
+
+  var students = [
+    {
+      name: 'Alex Chen',
+      q1: 'The distribution is unimodal and right-skewed. The peak is the 0-10 pages bin with 8 students, ' +
+        'so the most common amount is relatively low reading. There is a long tail toward higher page counts, ' +
+        'with fewer students in each bin from 21-30 upward, including 1 student in 51-60. It is not symmetric ' +
+        'because the tail extends to the right while most students cluster on the left.',
+      q2: 'The center is around 7 hours of sleep because the 7-8 bin has 10 students and the 6-7 bin has 9. ' +
+        'The distribution is fairly symmetric with most values between 6 and 8 hours. Spread is moderate: ' +
+        'students range from about 4-5 hours up to 9-10 hours, so there is roughly a 5-hour spread across bins.'
+    },
+    {
+      name: 'Jordan Lee',
+      q1: 'The histogram is unimodal with the highest bar at 0-10 pages (8 students). I think it is roughly ' +
+        'symmetric because the counts look somewhat balanced around the middle bins near 11-20 pages.',
+      q2: 'Typical sleep is about 7 hours since the 7-8 bin is largest with 10 students. Students vary from ' +
+        'around 4-5 hours to 9-10 hours, so there is noticeable variability.'
+    },
+    {
+      name: 'Sam Rivera',
+      q1: 'Most students read between 0 and 10 pages per week because that bin has 8 people. A few students read ' +
+        'more pages in the higher bins, but I am not sure about the exact shape name.',
+      q2: 'The middle is around 7-8 hours because those bins have the most students. Some sleep less and some ' +
+        'sleep more than that.'
+    },
+    {
+      name: 'Taylor Kim',
+      q1: 'The shape is skewed left because more students are on the left side of the histogram. The most common ' +
+        'bin is 0-10 pages.',
+      q2: 'Center is about 7 hours. Spread is big because the bin counts are different across the histogram.'
+    },
+    {
+      name: 'Morgan Davis',
+      q1: 'It goes up and then down.',
+      q2: 'Most people sleep around 7 hours.'
+    }
+  ];
+
+  var timestamp = new Date();
+  var responseRows = [];
+  var i;
+  for (i = 0; i < students.length; i++) {
+    responseRows.push([
+      timestamp,
+      students[i].name,
+      students[i].q1,
+      'Pending',
+      question1Id,
+      quizId
+    ]);
+    responseRows.push([
+      timestamp,
+      students[i].name,
+      students[i].q2,
+      'Pending',
+      question2Id,
+      quizId
+    ]);
+  }
+
+  var startRow = responsesSheet.getLastRow() + 1;
+  responsesSheet.getRange('A' + startRow + ':F' + (startRow + responseRows.length - 1)).setValues(responseRows);
+  SpreadsheetApp.flush();
+
+  logQuizEvent_('info', 'seedHistogramPilotQuiz', 'pilot quiz seeded', {
+    quizName: quizName,
+    quizId: quizId,
+    questionIds: [question1Id, question2Id],
+    responseCount: responseRows.length
+  });
+
+  return {
+    quizName: quizName,
+    quizId: quizId,
+    questionIds: [question1Id, question2Id],
+    responseCount: responseRows.length,
+    studentCount: students.length
+  };
 }

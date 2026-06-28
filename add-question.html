@@ -120,6 +120,55 @@
         color: #c5221f;
         display: block;
       }
+
+      .processing-overlay {
+        align-items: center;
+        background: rgba(32, 33, 36, 0.45);
+        display: none;
+        inset: 0;
+        justify-content: center;
+        position: fixed;
+        z-index: 1000;
+      }
+
+      .processing-dialog {
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+        min-width: 220px;
+        padding: 28px 32px;
+        text-align: center;
+      }
+
+      .processing-spinner {
+        animation: spin 0.9s linear infinite;
+        border: 3px solid #e8f0fe;
+        border-radius: 50%;
+        border-top-color: #1a73e8;
+        height: 36px;
+        margin: 0 auto 16px;
+        width: 36px;
+      }
+
+      .processing-spinner.done {
+        animation: none;
+        border: none;
+        color: #137333;
+        font-size: 32px;
+        height: auto;
+        line-height: 1;
+        width: auto;
+      }
+
+      .processing-message {
+        color: #202124;
+        font-size: 15px;
+        font-weight: 500;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
     </style>
   </head>
   <body>
@@ -146,78 +195,49 @@
     </form>
     <div class="message" id="message"></div>
 
+    <div id="processingOverlay" class="processing-overlay">
+      <div class="processing-dialog">
+        <div id="processingSpinner" class="processing-spinner"></div>
+        <div id="processingMessage" class="processing-message">Processing...</div>
+      </div>
+    </div>
+
     <script>
       var pendingQuestionImageData = '';
       var MAX_QUESTION_IMAGE_BYTES = 1048576;
-      var IMAGE_UPLOAD_CHUNK_SIZE = 40000;
+      var processingTimer = null;
+
+      function showProcessing(message) {
+        if (processingTimer) {
+          clearTimeout(processingTimer);
+          processingTimer = null;
+        }
+        document.getElementById('processingSpinner').className = 'processing-spinner';
+        document.getElementById('processingSpinner').textContent = '';
+        document.getElementById('processingMessage').textContent = message || 'Processing...';
+        document.getElementById('processingOverlay').style.display = 'flex';
+      }
+
+      function showDone(message) {
+        var spinner = document.getElementById('processingSpinner');
+        spinner.className = 'processing-spinner done';
+        spinner.textContent = '\u2713';
+        document.getElementById('processingMessage').textContent = message || 'Done!';
+        processingTimer = setTimeout(function() {
+          document.getElementById('processingOverlay').style.display = 'none';
+          processingTimer = null;
+        }, 700);
+      }
+
+      function hideProcessing() {
+        if (processingTimer) {
+          clearTimeout(processingTimer);
+          processingTimer = null;
+        }
+        document.getElementById('processingOverlay').style.display = 'none';
+      }
 
       document.getElementById('questionImage').addEventListener('change', handleQuestionImageSelected);
-
-      function logToSheet(level, source, message, details) {
-        google.script.run
-          .withFailureHandler(function() {})
-          .logFromClient(level, source, message, JSON.stringify(details || {}));
-      }
-
-      function uploadQuestionImage(row, questionId, quizId, imageData, onSuccess, onError) {
-        var parts = [];
-        for (var i = 0; i < imageData.length; i += IMAGE_UPLOAD_CHUNK_SIZE) {
-          parts.push(imageData.substring(i, i + IMAGE_UPLOAD_CHUNK_SIZE));
-        }
-
-        logToSheet('info', 'client', 'begin image upload', {
-          row: row,
-          questionId: questionId,
-          quizId: quizId,
-          imageLength: imageData.length,
-          partCount: parts.length
-        });
-
-        function sendPart(index) {
-          if (index >= parts.length) {
-            google.script.run
-              .withSuccessHandler(onSuccess)
-              .withFailureHandler(function(err) {
-                logToSheet('error', 'client', 'finalizeQuestionImageUpload failed', {
-                  row: row,
-                  questionId: questionId,
-                  message: err.message || String(err)
-                });
-                onError(err);
-              })
-              .finalizeQuestionImageUpload(row, parts.length, questionId, quizId);
-            return;
-          }
-
-          google.script.run
-            .withSuccessHandler(function() {
-              sendPart(index + 1);
-            })
-            .withFailureHandler(function(err) {
-              logToSheet('error', 'client', 'uploadQuestionImagePart failed', {
-                row: row,
-                partIndex: index,
-                message: err.message || String(err)
-              });
-              onError(err);
-            })
-            .uploadQuestionImagePart(row, index, parts[index]);
-        }
-
-        google.script.run
-          .withSuccessHandler(function() {
-            sendPart(0);
-          })
-          .withFailureHandler(function(err) {
-            logToSheet('error', 'client', 'beginQuestionImageUpload failed', {
-              row: row,
-              questionId: questionId,
-              message: err.message || String(err)
-            });
-            onError(err);
-          })
-          .beginQuestionImageUpload(row, parts.length, imageData.length, questionId, quizId);
-      }
 
       function readQuestionImageFile(input, onReady, onError) {
         var file = input.files && input.files[0];
@@ -301,71 +321,35 @@
         }
 
         function submitQuestion(imageData) {
-          logToSheet('info', 'client', 'submitQuestion', {
-            hasImageData: !!imageData,
-            imageLength: imageData ? imageData.length : 0,
-            hadFile: hadFile,
-            hadPending: hadPending,
-            pendingLength: pendingQuestionImageData ? pendingQuestionImageData.length : 0
-          });
-
           if (!imageData && (hadFile || hadPending)) {
-            showError('The image could not be read from the file picker. Check the Logs sheet.');
+            showError('The image could not be read from the file picker.');
             return;
           }
 
           btn.disabled = true;
           message.className = 'message';
           message.style.display = 'none';
-
-          function finishSave(result, imageMessage) {
-            btn.disabled = false;
-            document.getElementById('addForm').reset();
-            clearQuestionImage();
-            message.textContent = result.message + (imageMessage ? ' ' + imageMessage : '');
-            message.className = 'message success';
-          }
+          showProcessing('Saving question...');
 
           google.script.run
             .withSuccessHandler(function(result) {
-              if (!imageData) {
-                finishSave(result, '');
-                return;
-              }
-
-              uploadQuestionImage(
-                result.row,
-                result.questionId,
-                result.quizId,
-                imageData,
-                function(imageResult) {
-                if (!imageResult || !imageResult.imageSaved) {
-                  btn.disabled = false;
-                  showError(
-                    result.message + ' However, the image was not saved. Check the Logs sheet.'
-                  );
-                  return;
-                }
-                finishSave(result, 'Image saved (' + imageResult.imageBytes + ' characters).');
-              }, function(err) {
-                btn.disabled = false;
-                showError(
-                  result.message + ' However, the image could not be saved: ' +
-                  (err.message || String(err)) + ' Check the Logs sheet.'
-                );
-              });
+              showDone('Done!');
+              btn.disabled = false;
+              document.getElementById('addForm').reset();
+              clearQuestionImage();
+              message.textContent = result.message;
+              message.className = 'message success';
             })
             .withFailureHandler(function(err) {
+              hideProcessing();
               btn.disabled = false;
-              logToSheet('error', 'client', 'addQuestionAndRubric failed', {
-                message: err.message || String(err)
-              });
               showError(err.message || String(err));
             })
             .addQuestionAndRubric({
               quizName: quizName,
               question: question,
-              rubric: rubric
+              rubric: rubric,
+              imageData: imageData || ''
             });
         }
 

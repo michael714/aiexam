@@ -25,57 +25,64 @@ Evaluation and review use **question ID** and **quiz ID**, not response row numb
 
 Key helpers:
 
-- `normalizeSheetId_(value)`, `cellText_(value)` — safe ID/text handling (trim, strip leading `'`)
-- `getQuestionAndRubricByQuestionId_(questionsSheet, questionId, quizId)` — rubric lookup for grading
-- `getQuestionBankForQuiz_`, `findQuestionById_`, `resolveQuestionIdForEval_` — review screen question text + `imageData`
-- `buildQuestionImageMap_`, `readQuestionImageData_`, `questionHasStoredImage_`, `lookupQuestionImageData_` — image read path
-- `writeQuestionImageToSheet_` — split image into QuestionImages rows; set Questions G to `PARTS:n`
-- `getIdsFromResponseRow_(responsesSheet, row)` — fallback when Evaluations F/G are empty
-- `ensureQuestionIds_(questionsSheet)` — backfill missing F column on Questions
+- `normalizeSheetId_(value)`, `cellText_(value)` — safe ID/text handling
+- `getQuestionAndRubricByQuestionId_(questionsSheet, questionId, quizId, skipImages)` — rubric lookup; pass `true` for skipImages during grading
+- `getQuestionBankForQuiz_(questionsSheet, quizId, skipImages)` — review bank; skipImages avoids loading full image data
+- `findQuestionById_`, `resolveEvalRowIds_`, `lookupQuestionInBank_` — review screen
+- `questionHasImageMarker_(legacyCellValue)` — fast hasImage check from column G (`PARTS:n` or `data:image/...`)
+- `readQuestionImageDataForQuestion_(ss, questionId, quizId, legacyCellValue)` — targeted image read (preferred)
+- `buildQuestionImageMap_`, `readQuestionImageData_`, `writeQuestionImageToSheet_` — legacy QuestionImages path (still used for old saves)
+- `ensureQuestionIds_(questionsSheet)` — batch backfill F column
 - `generateShortId_()` / `generateUniqueQuestionId_` / `generateUniqueQuizId_` — 8-char IDs
-- `ensureLogsSheet_`, `logQuizEvent_`, `logFromClient` — **Logs** tab diagnostics
+- `ensureLogsSheet_`, `logQuizEvent_`, `logFromClient` — **Logs** tab
+
+## Batch evaluation helpers
+
+- `triggerEvaluation(quizId)` — public entry; delegates to `triggerEvaluationByQuestion_`
+- `collectPendingResponsesByQuestion_(allResponses, quizId)` — group Pending rows by question
+- `callAnthropicBatchGrade_(apiKey, question, rubric, entries)` — one API call for up to `EVAL_BATCH_SIZE_` (15) answers
+- `extractJsonFromModelText_(text)`, `formatBatchEvaluationText_(score, feedback)`, `writeBatchEvaluationResults_`
+- Constants: `EVAL_BATCH_SIZE_ = 15`, `EVAL_BATCH_MAX_TOKENS_ = 8192`, `EVAL_MODEL_ = 'claude-haiku-4-5-20251001'`
 
 ## Public API surface (web + menu)
 
 **Teacher**
 
-- `addQuestionAndRubric({ quizName, question, rubric })` — `appendRow` on Questions; returns `{ row, questionId, quizId, message, ... }`. Image saved separately (see below).
-- `beginQuestionImageUpload(row, partCount, totalLength, questionId, quizId)`
-- `uploadQuestionImagePart(row, partIndex, partData)`
-- `finalizeQuestionImageUpload(row, partCount, questionId, quizId)` — assembles transport chunks, calls `writeQuestionImageToSheet_`
+- `addQuestionAndRubric({ quizName, question, rubric, imageData })` — single call; optional `imageData` (full data URL) saved to Questions G via `prepareQuestionImageData_`
 - `getQuizEvaluationList()` — quizzes + pending counts
-- `triggerEvaluation(quizId)` — grade Pending rows; omit `quizId` to grade all (spreadsheet menu)
+- `triggerEvaluation(quizId)` — question-first batch grading; omit `quizId` to grade all (menu)
 - `getQuizReviewList()` — quizzes + evaluated counts
-- `getEvaluationsForQuiz(quizId)` — returns `questionText`, `qPrompt`, `answerText`, `rubricText`, `evaluationText`, `imageData`, etc.
+- `getEvaluationsForQuiz(quizId)` — returns `hasImage` (not `imageData`); lazy image load on client
 - `updateEvaluation(row, evaluationText)` — teacher edit of column E
-- `logFromClient(level, source, message, detailsJson)` — client-side logging to **Logs**
+- `seedHistogramPilotQuiz()` / `seedHistogramPilotQuizWithAlert()` — 2-question histogram pilot + 5 student responses
 
 **Student**
 
 - `getQuizList()`
-- `getQuestionsForQuiz(quizId)` — `{ questionId, questionText, hasImage, number }` per question (no full `imageData`)
-- `getQuestionImage(quizId, questionId)` — `{ imageData, hasImage, ... }` for lazy image load
-- `submitQuiz(studentName, quizId, answers)`
+- `getQuestionsForQuiz(quizId)` — `{ questionId, questionText, hasImage, number }` (no image payload)
+- `getQuestionImage(quizId, questionId)` — lazy image load
+- `submitQuiz(studentName, quizId, answers)` — batch `setValues` on Responses
 
 **Menu**
 
-- `openLogsSheet`, `setupSheet`, `showAddQuestionDialog`, `runEvaluationWithAlert`, `authorizeExternalRequests`
+- `openLogsSheet`, `setupSheet`, `showAddQuestionDialog`, `runEvaluationWithAlert`, `authorizeExternalRequests`, `seedHistogramPilotQuizWithAlert`
 
 **Routing**
 
 - `doGet(e)` — default → student; `?teach` → teacher
 
-## Image validation
+## Image validation and storage
 
 - `prepareQuestionImageData_(base64Image)` — strip whitespace, require `data:image/(png|gif);base64,`, max ~1 MB decoded
-- Do not write full images to a single Questions cell — use **QuestionImages** (50k character cell limit)
+- **New saves:** full data URL in Questions G (works for typical quiz images ≤ ~1 MB / ~92k char data URLs)
+- **Legacy:** `PARTS:n` in G + QuestionImages rows; do not break read path
+
+Legacy upload API (`beginQuestionImageUpload`, `uploadQuestionImagePart`, `uploadQuestionImageParts`, `finalizeQuestionImageUpload`) remains in Code.gs but is **not used by current HTML UI** — do not wire back without a proven need.
 
 ## Header ensure functions
 
-Call before read/write on existing sheets (upgrades headers without wiping data):
-
 - `ensureQuestionsHeaders_` — through column G
-- `ensureQuestionImagesSheet_` — QuestionImages tab
+- `ensureQuestionImagesSheet_` — QuestionImages tab (legacy)
 - `ensureResponsesHeaders_` — through column F
 - `ensureEvaluationsHeaders_` — through column G
 - `ensureLogsSheet_` — Logs tab
@@ -86,32 +93,25 @@ Call before read/write on existing sheets (upgrades headers without wiping data)
 var key = PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
 ```
 
-Never commit API keys. Document Script Properties setup in comments near `triggerEvaluation`.
+Never commit API keys. Document Script Properties setup near `triggerEvaluationByQuestion_`.
 
 ## Common pitfalls (avoid regressions)
 
 ```javascript
-// ❌ setColumnWidths does NOT accept an array — use setColumnWidth per column
-sheet.setColumnWidths(1, 5, [160, 160, 300, 300, 400]);
-
-// ✅
-for (var i = 0; i < widths.length; i++) {
-  sheet.setColumnWidth(i + 1, widths[i]);
-}
+// ❌ setColumnWidths does NOT accept an array
+// ✅ use setColumnWidth per column in setColumnWidths_(sheet, widths)
 
 // ❌ 4-arg getRange(row, col, row, col) is (startRow, startCol, numRows, numCols)
-evalSheet.getRange(2, 1, 2, 4); // selects 2 rows!
-
 // ✅ use A1 notation for multi-row writes
-imageSheet.getRange('A' + startRow + ':D' + endRow).setValues(writeRows);
+sheet.getRange('A' + startRow + ':F' + endRow).setValues(rows);
 ```
 
-- When reading Questions `A2:G`, indices are: `[1]` question, `[2]` rubric, `[4]` quiz ID, `[5]` question ID, `[6]` image marker / legacy image
-- When reading Evaluations `A2:G`, indices are: `[4]` AI feedback, `[5]` question ID, `[6]` quiz ID
-- Responses **must** have headers in row 1; call `ensureResponsesHeaders_` before reading/writing
+- Questions `A2:G` indices: `[1]` question, `[2]` rubric, `[4]` quiz ID, `[5]` question ID, `[6]` image
+- Evaluations `A2:G` indices: `[4]` AI feedback, `[5]` question ID, `[6]` quiz ID
+- Call `ensureResponsesHeaders_` before reading/writing Responses
 - Wrap `UrlFetchApp.fetch` + `JSON.parse` in try/catch; use `muteHttpExceptions: true`
-- Menu actions that need user feedback: wrap in alert helper (see `runEvaluationWithAlert`)
-- Large base64 strings: pass as **single payload object** to `google.script.run` and/or use **transport chunking** — do not rely on a 4th positional string argument
+- Pass structured payloads as **one object** to `google.script.run` (including `imageData`)
+- **Do not** load full image maps in `getQuestionsForQuiz` or `getEvaluationsForQuiz` — use `hasImage` + lazy `getQuestionImage`
 
 ## OAuth scopes (appsscript.json)
 
