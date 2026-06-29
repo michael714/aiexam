@@ -39,24 +39,38 @@ Key helpers:
 ## Batch evaluation helpers
 
 - `triggerEvaluation(quizId)` — public entry; delegates to `triggerEvaluationByQuestion_`
+- `buildEvaluationRunPlan_(quizId)` — collect Pending groups, build per-batch steps
+- `executeEvaluationPlanStep_(plan, stepIndex, ...)` — one Anthropic batch + sheet writes
+- `buildEvaluationResult_(plan, actualMs)` — return object + `logEvaluationUiEvent_('serverResultReady', ...)`
 - `collectPendingResponsesByQuestion_(allResponses, quizId)` — group Pending rows by question
 - `callAnthropicBatchGrade_(apiKey, question, rubric, entries)` — one API call for up to `EVAL_BATCH_SIZE_` (15) answers; **always** prepends `EVAL_GRADING_PHILOSOPHY_` (Grading for Equity 0–4 scale)
 - `extractJsonFromModelText_(text)`, `formatBatchEvaluationText_(score, feedback)`, `writeBatchEvaluationResults_`
-- Constants: `EVAL_BATCH_SIZE_ = 15`, `EVAL_BATCH_MAX_TOKENS_ = 8192`, `EVAL_MODEL_ = 'claude-haiku-4-5-20251001'`, `EVAL_SCORE_MAX_ = 4`, `EVAL_GRADING_PHILOSOPHY_`
+- Constants: `EVAL_BATCH_SIZE_ = 15`, `EVAL_BATCH_MAX_TOKENS_ = 8192`, `EVAL_MODEL_ = 'claude-haiku-4-5-20251001'`, `EVAL_SCORE_MAX_ = 4`, `EVAL_GRADING_PHILOSOPHY_`, `EVAL_ESTIMATE_SEC_PER_API_CALL_ = 5`, `EVAL_ESTIMATE_SEC_OVERHEAD_ = 3`
 - Scores: whole numbers **0–4**; stored as `Score: X/4` in Evaluations column E
 - Per-question rubrics list **requested facts**; do not use legacy `/10` point-bucket rubrics in new content
+
+## Evaluation timing helpers
+
+- `countEvaluationApiCalls_(questionOrder, groups)`, `estimateEvaluationDurationMs_(apiCallCount)`, `roundEvaluationSeconds_(ms)`
+- `logEvaluationTiming_(phase, details)` — Logs source `evaluation`; `event: evaluationTiming`, phases `started` / `completed` / `failed`
+- `logEvaluationUiEvent_(phase, details)` — Logs source `evaluationUi`
+- `getLastEvaluationTimingByQuiz_()` — latest completed timing per quizId from Logs (newest first; no age limit)
+- `serializeEvaluationTimingForClient_(timing)`, `serializeQuizEvaluationListForClient_(list)` — **required** before returning to web app
+- `formatEvaluationDuration_(seconds)`, `formatEvaluationAlertText_(result)` — menu alert after **Run AI Evaluation**
 
 ## Public API surface (web + menu)
 
 **Teacher**
 
 - `addQuestionAndRubric({ quizName, question, rubric, imageData })` — single call; optional `imageData` (full data URL) saved to Questions G via `prepareQuestionImageData_`
-- `getQuizEvaluationList()` — quizzes + pending counts
-- `triggerEvaluation(quizId)` — question-first batch grading; omit `quizId` to grade all (menu)
+- `getQuizEvaluationList()` — all quizzes + `pendingCount` + `lastEvaluation` (serialized; primitives only)
+- `triggerEvaluation(quizId)` — question-first batch grading; omit `quizId` to grade all (menu); returns result object with `evalRunId`, `estimatedSec`, `actualSec`, etc.
 - `getQuizReviewList()` — quizzes + evaluated counts
 - `getEvaluationsForQuiz(quizId)` — returns `hasImage` (not `imageData`); lazy image load on client
 - `updateEvaluation(row, evaluationText)` — teacher edit of column E
-- `seedHistogramPilotQuiz()` / `seedHistogramPilotQuizWithAlert()` — 2-question histogram pilot + 5 student responses
+- `seedHistogramPilotQuiz()` / `seedHistogramPilotQuizWithAlert()` — 2-question pilot + 5 student responses
+- `seedExtendedHistogramPilotQuiz()` / `seedExtendedHistogramPilotQuizWithAlert()` — 8-question pilot + 16 students (128 responses)
+- `clearAllQuizData()` / `clearAllQuizDataWithConfirm()` — wipe Questions/Responses/Evaluations data rows (headers kept)
 
 **Student**
 
@@ -67,7 +81,7 @@ Key helpers:
 
 **Menu**
 
-- `openLogsSheet`, `setupSheet`, `showAddQuestionDialog`, `runEvaluationWithAlert`, `authorizeExternalRequests`, `seedHistogramPilotQuizWithAlert`
+- `openLogsSheet`, `setupSheet`, `showAddQuestionDialog`, `runEvaluationWithAlert`, `authorizeExternalRequests`, `seedHistogramPilotQuizWithAlert`, `seedExtendedHistogramPilotQuizWithAlert`, `clearAllQuizDataWithConfirm`
 
 **Routing**
 
@@ -114,6 +128,8 @@ sheet.getRange('A' + startRow + ':F' + endRow).setValues(rows);
 - Wrap `UrlFetchApp.fetch` + `JSON.parse` in try/catch; use `muteHttpExceptions: true`
 - Pass structured payloads as **one object** to `google.script.run` (including `imageData`)
 - **Do not** load full image maps in `getQuestionsForQuiz` or `getEvaluationsForQuiz` — use `hasImage` + lazy `getQuestionImage`
+- **Do not** return `Date` objects (or other non-JSON types) from functions called via `google.script.run` — use `serializeQuizEvaluationListForClient_`; symptom: server logs show data but client receives empty list
+- **Do not** split teacher Evaluate into multiple `google.script.run` calls per Anthropic batch unless a proven client timeout requires it — keep one `triggerEvaluation` call; batching savings are Anthropic-side only
 
 ## OAuth scopes (appsscript.json)
 

@@ -11,7 +11,7 @@ Container-bound Google Apps Script + clasp project for a teacher/student multi-q
 
 | File | Role |
 |---|---|
-| `Code.gs` | Server logic: routing, quiz CRUD, images, student submit, AI evaluation, review, logging, pilot seed |
+| `Code.gs` | Server logic: routing, quiz CRUD, images, student submit, AI evaluation, review, logging, pilot seeds |
 | `teacher.html` | Teacher dashboard — **Add Question**, **Evaluate**, **Review** (`?teach`) |
 | `add-question.html` | Spreadsheet modal for **Quiz → Add Question and Rubric** |
 | `student.html` | Quiz picker, one-question-at-a-time UI, submit full quiz |
@@ -47,10 +47,12 @@ Questions in the same quiz share **quiz name** (D) and **quiz ID** (E). Each que
 ## Teacher workflow
 
 1. **Add Question** — quiz name, question, rubric, optional image; reusing quiz name reuses quiz ID.
-2. **Evaluate** — pick a quiz; **question-first batch grading** of all **Pending** responses (`triggerEvaluation` → `triggerEvaluationByQuestion_`).
+2. **Evaluate** — lists **all quizzes** from Questions (not only those with Pending responses). **Evaluate** is disabled when `pendingCount === 0`. Each card shows **last evaluation timing** from Logs (estimated + server actual; client wait when logged). Run grading via `triggerEvaluation(quizId)` (single server call, question-first batching).
 3. **Review** — pick a quiz; browse evaluations; **Previous/Next** at top and bottom; footer shows current student + question; **Edit Evaluation** → `updateEvaluation`.
 
-Spreadsheet menu: **Quiz → Run AI Evaluation**, **Seed Histogram Pilot Quiz**, **Open Logs**, **Authorize API access**, **Set up sheets**.
+Spreadsheet menu: **Quiz → Run AI Evaluation**, **Seed Histogram Pilot Quiz**, **Seed Extended Pilot Quiz**, **Clear all quiz data...**, **Open Logs**, **Authorize API access**, **Set up sheets**.
+
+**Clear all quiz data** deletes all data rows in Questions, Responses, and Evaluations (headers kept). Logs are not cleared. Use before re-seeding pilots.
 
 ## Student workflow
 
@@ -67,7 +69,7 @@ Spreadsheet menu: **Quiz → Run AI Evaluation**, **Seed Histogram Pilot Quiz**,
 ## Deployment checklist
 
 1. `clasp push --force` after code changes
-2. **Deploy → Manage deployments** → pencil → **New version** → Deploy (same URL)
+2. **Deploy → Manage deployments** → pencil → **New version** → Deploy (same URL) — required for **teacher.html** / **student.html** changes; spreadsheet menu picks up `Code.gs` after refresh
 3. `ANTHROPIC_API_KEY` in Script Properties (not in source code)
 4. Run **Quiz → Authorize API access** once for `UrlFetchApp`
 5. Web app: Execute as **Me**, access **Anyone**
@@ -91,20 +93,33 @@ Per-question rubrics (Questions column C) should list **requested facts** and **
 - Model returns JSON array: `[{ id, score, feedback }]` where `id` = Responses row number and `score` is 0–4.
 - Writes Evaluations column E as `Score: X/4\n\n{feedback}`.
 - Text-only grading (images not sent to model).
-- Validated pilot: **Histograms Pilot Quiz** — 5 students × 2 questions = 10 answers in **2 API calls** (~13 s).
+- Validated pilots:
+  - **Histograms Pilot Quiz** — 5 students × 2 questions = 10 answers, **2 API calls** (~13 s)
+  - **Histograms Extended Pilot Quiz** — 16 students × 8 questions = 128 answers, **16 API calls** (~71–80 s server)
+
+## Evaluation timing (planning + troubleshooting)
+
+- **Estimate:** `3 s` overhead + `5 s` per Anthropic API call (`EVAL_ESTIMATE_SEC_OVERHEAD_`, `EVAL_ESTIMATE_SEC_PER_API_CALL_`), calibrated from pilots.
+- **Logs** (linked by `evalRunId`):
+  - Source `evaluation`, `evaluationTiming` — `started` / `completed` / `failed` with `estimatedSec`, `actualSec`, `deltaSec`, `deltaPct`, counts
+  - Source `evaluationUi` — server payloads (`serverResultReady`, `evaluateListLoaded`)
+  - Source `teacherEvaluate` — client UI events via `logFromClient` (`finishEvaluationUi`, `client timing reported`, etc.)
+- **Teacher Evaluate cards:** `getQuizEvaluationList()` attaches `lastEvaluation` per quiz from latest completed log row (no age cutoff). Returned via `serializeQuizEvaluationListForClient_` (primitives only — **no Date objects**).
+- **Hybrid UI timing:** server **estimate** from `triggerEvaluation` result; **client wait time** measured in browser; completion overlay requires **OK** to dismiss.
 
 ## UI feedback
 
-All web pages use a **processing overlay** (`showProcessing` / `showDone` / `hideProcessing`) during async server calls so users see progress during multi-second waits.
+All web pages use a **processing overlay** (`showProcessing` / `showDone` / `hideProcessing` / `dismissProcessing`) during async server calls. After evaluation, **Done** shows a checkmark and **OK** button (user must dismiss); quiz list reloads on OK.
 
 ## Question content (for demos)
 
 - Write question, rubric, and sample answers as **single paragraphs** (no line breaks in sheet cells).
 - Prefer rubrics that list **requested facts** and **named misconceptions**; scoring uses the global 0–4 scale above, not per-fact point weights.
-- Use `seedHistogramPilotQuiz()` / **Quiz → Seed Histogram Pilot Quiz** for a 2-question statistics histogram pilot with 5 varied student responses.
+- `seedHistogramPilotQuiz()` — 2 questions, 5 students (10 responses).
+- `seedExtendedHistogramPilotQuiz()` — 8 questions, 16 students (128 responses); delete existing extended quiz rows before re-seeding.
 
 ## Roadmap
 
-- **Statistics content:** histogram pilot seeded; expand question bank as needed.
+- **Statistics content:** histogram pilots seeded; expand question bank as needed.
 - **Future teacher features:** create/copy/archive/delete quiz (not implemented).
 - **Future grading:** optional vision input for questions with images; auto-resume Evaluate after 6-minute GAS timeout.

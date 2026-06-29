@@ -7,6 +7,9 @@ function onOpen() {
     .addItem('Authorize API access (run once)', 'authorizeExternalRequests')
     .addItem('Run AI Evaluation', 'runEvaluationWithAlert')
     .addItem('Seed Histogram Pilot Quiz', 'seedHistogramPilotQuizWithAlert')
+    .addItem('Seed Extended Pilot Quiz', 'seedExtendedHistogramPilotQuizWithAlert')
+    .addSeparator()
+    .addItem('Clear all quiz data...', 'clearAllQuizDataWithConfirm')
     .addToUi();
 }
 
@@ -14,6 +17,68 @@ function openLogsSheet() {
   var ss = getQuizSpreadsheet_();
   ensureLogsSheet_(ss);
   ss.setActiveSheet(ss.getSheetByName('Logs'));
+}
+
+function clearAllQuizDataWithConfirm() {
+  var ui = SpreadsheetApp.getUi();
+  var response = ui.alert(
+    'Clear all quiz data?',
+    'This deletes every data row in Questions, Responses, and Evaluations. Column headers are kept.\n\n' +
+      'Logs are not cleared. Use File > Version history on the spreadsheet to restore if needed.',
+    ui.ButtonSet.YES_NO
+  );
+  if (response !== ui.Button.YES) {
+    return;
+  }
+
+  try {
+    var result = clearAllQuizData_();
+    ui.alert(
+      'Quiz data cleared.\n\n' +
+      'Questions removed: ' + result.questionsRemoved + '\n' +
+      'Responses removed: ' + result.responsesRemoved + '\n' +
+      'Evaluations removed: ' + result.evaluationsRemoved
+    );
+  } catch (error) {
+    ui.alert('Could not clear quiz data:\n\n' + error.message);
+  }
+}
+
+function clearAllQuizData_() {
+  var ss = getQuizSpreadsheet_();
+  var questionsRemoved = clearQuizSheetData_(ss, 'Questions', ensureQuestionsHeaders_);
+  var responsesRemoved = clearQuizSheetData_(ss, 'Responses', ensureResponsesHeaders_);
+  var evaluationsRemoved = clearQuizSheetData_(ss, 'Evaluations', ensureEvaluationsHeaders_);
+  SpreadsheetApp.flush();
+
+  logQuizEvent_('info', 'clearAllQuizData', 'quiz data cleared', {
+    questionsRemoved: questionsRemoved,
+    responsesRemoved: responsesRemoved,
+    evaluationsRemoved: evaluationsRemoved
+  });
+
+  return {
+    questionsRemoved: questionsRemoved,
+    responsesRemoved: responsesRemoved,
+    evaluationsRemoved: evaluationsRemoved
+  };
+}
+
+function clearQuizSheetData_(ss, sheetName, ensureHeadersFn) {
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) {
+    return 0;
+  }
+
+  ensureHeadersFn(sheet);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    return 0;
+  }
+
+  var count = lastRow - 1;
+  sheet.deleteRows(2, count);
+  return count;
 }
 
 function showAddQuestionDialog() {
@@ -34,7 +99,7 @@ function authorizeExternalRequests() {
 function runEvaluationWithAlert() {
   try {
     var result = triggerEvaluation();
-    SpreadsheetApp.getUi().alert(result);
+    SpreadsheetApp.getUi().alert(formatEvaluationAlertText_(result));
   } catch (error) {
     SpreadsheetApp.getUi().alert('Evaluation failed:\n\n' + error.message);
   }
@@ -44,6 +109,9 @@ var EVAL_BATCH_SIZE_ = 15;
 var EVAL_BATCH_MAX_TOKENS_ = 8192;
 var EVAL_MODEL_ = 'claude-haiku-4-5-20251001';
 var EVAL_SCORE_MAX_ = 4;
+// Calibrated from pilot runs: 2 API calls ~13s; 16 API calls ~80s.
+var EVAL_ESTIMATE_SEC_PER_API_CALL_ = 5;
+var EVAL_ESTIMATE_SEC_OVERHEAD_ = 3;
 var EVAL_GRADING_PHILOSOPHY_ = [
   'Grading philosophy (Grading for Equity — 4-point rubric):',
   'Score each answer from 0 to 4 based on how many requested facts from the question-specific rubric the student addressed correctly.',
@@ -498,6 +566,156 @@ function logFromClient(level, source, message, detailsJson) {
   }
   logQuizEvent_(level || 'info', source || 'client', message || '', details);
   return { ok: true };
+}
+
+function parseLogDetails_(detailsText) {
+  if (!detailsText) {
+    return null;
+  }
+  try {
+    return JSON.parse(String(detailsText));
+  } catch (parseError) {
+    return null;
+  }
+}
+
+function normalizeLogQuizId_(quizId) {
+  var id = String(quizId == null ? '' : quizId).trim();
+  if (!id || id === '(all)') {
+    return '';
+  }
+  return id;
+}
+
+function getLastEvaluationTimingByQuiz_() {
+  var ss = getQuizSpreadsheet_();
+  var sheet = ensureLogsSheet_(ss);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    return {};
+  }
+
+  var rows = sheet.getRange('A2:E' + lastRow).getValues();
+  var byQuiz = {};
+  var byRunId = {};
+  var i;
+  var j;
+  var source;
+  var message;
+  var details;
+  var quizId;
+  var runId;
+
+  for (i = rows.length - 1; i >= 0; i--) {
+    source = String(rows[i][2] || '').trim();
+    message = String(rows[i][3] || '').trim();
+    details = parseLogDetails_(rows[i][4]);
+    if (!details) {
+      continue;
+    }
+
+    if (source === 'evaluation' && details.event === 'evaluationTiming' && details.phase === 'completed') {
+      quizId = normalizeLogQuizId_(details.quizId);
+      runId = String(details.evalRunId || '').trim();
+      if (!quizId || byQuiz[quizId]) {
+        continue;
+      }
+      byQuiz[quizId] = {
+        evalRunId: runId,
+        estimatedSec: details.estimatedSec,
+        actualSec: details.actualSec,
+        deltaSec: details.deltaSec,
+        deltaPct: details.deltaPct,
+        pendingCount: details.pendingCount,
+        apiCallCount: details.apiCallCount,
+        completedAt: formatLogTimestampForClient_(rows[i][0])
+      };
+      if (runId) {
+        byRunId[runId] = byQuiz[quizId];
+      }
+    }
+  }
+
+  for (j = rows.length - 1; j >= 0; j--) {
+    source = String(rows[j][2] || '').trim();
+    message = String(rows[j][3] || '').trim();
+    details = parseLogDetails_(rows[j][4]);
+    if (!details) {
+      continue;
+    }
+
+    if (source === 'teacherEvaluate' && message === 'client timing reported') {
+      runId = String(details.evalRunId || '').trim();
+      quizId = normalizeLogQuizId_(details.quizId);
+      if (runId && byRunId[runId]) {
+        byRunId[runId].clientWaitSec = details.clientWaitSec;
+      } else if (quizId && byQuiz[quizId] && byQuiz[quizId].clientWaitSec == null) {
+        byQuiz[quizId].clientWaitSec = details.clientWaitSec;
+      }
+    }
+  }
+
+  return byQuiz;
+}
+
+function formatLogTimestampForClient_(value) {
+  if (!value) {
+    return '';
+  }
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return value.toISOString();
+  }
+  return String(value);
+}
+
+function serializeEvaluationTimingForClient_(timing) {
+  if (!timing) {
+    return null;
+  }
+
+  return {
+    evalRunId: String(timing.evalRunId || ''),
+    estimatedSec: timing.estimatedSec == null ? null : Number(timing.estimatedSec),
+    actualSec: timing.actualSec == null ? null : Number(timing.actualSec),
+    deltaSec: timing.deltaSec == null ? null : Number(timing.deltaSec),
+    deltaPct: timing.deltaPct == null ? null : Number(timing.deltaPct),
+    pendingCount: timing.pendingCount == null ? null : Number(timing.pendingCount),
+    apiCallCount: timing.apiCallCount == null ? null : Number(timing.apiCallCount),
+    clientWaitSec: timing.clientWaitSec == null ? null : Number(timing.clientWaitSec),
+    completedAt: formatLogTimestampForClient_(timing.completedAt)
+  };
+}
+
+function serializeQuizEvaluationListForClient_(list) {
+  var out = [];
+  var i;
+
+  for (i = 0; i < list.length; i++) {
+    var quiz = list[i];
+    out.push({
+      quizId: String(quiz.quizId || ''),
+      quizName: String(quiz.quizName || 'Unnamed Quiz'),
+      questionCount: Number(quiz.questionCount) || 0,
+      pendingCount: Number(quiz.pendingCount) || 0,
+      lastEvaluation: serializeEvaluationTimingForClient_(quiz.lastEvaluation)
+    });
+  }
+
+  return out;
+}
+
+function logEvaluationUiEvent_(phase, details) {
+  var payload = {
+    event: 'evaluationUi',
+    phase: phase
+  };
+  var key;
+  for (key in details) {
+    if (details.hasOwnProperty(key)) {
+      payload[key] = details[key];
+    }
+  }
+  logQuizEvent_('info', 'evaluationUi', 'evaluation ui ' + phase, payload);
 }
 
 var MAX_QUESTION_IMAGE_BYTES_ = 1048576;
@@ -1252,7 +1470,7 @@ function getQuizList() {
   for (var i = 0; i < rows.length; i++) {
     var question = rows[i][0];
     var quizName = String(rows[i][2]).trim();
-    var quizId = String(rows[i][3]).trim();
+    var quizId = normalizeSheetId_(rows[i][3]);
     if (!question || !quizId) {
       continue;
     }
@@ -1286,7 +1504,7 @@ function getQuizEvaluationList() {
       if (!isPendingStatus_(rows[i][3])) {
         continue;
       }
-      var rowQuizId = String(rows[i][5] || '').trim();
+      var rowQuizId = normalizeSheetId_(rows[i][5]);
       if (!rowQuizId) {
         continue;
       }
@@ -1298,7 +1516,21 @@ function getQuizEvaluationList() {
     list[j].pendingCount = pendingByQuiz[list[j].quizId] || 0;
   }
 
-  return list;
+  var timingByQuiz = getLastEvaluationTimingByQuiz_();
+  var quizzesWithTiming = 0;
+  for (j = 0; j < list.length; j++) {
+    list[j].lastEvaluation = timingByQuiz[list[j].quizId] || null;
+    if (list[j].lastEvaluation) {
+      quizzesWithTiming++;
+    }
+  }
+
+  logEvaluationUiEvent_('evaluateListLoaded', {
+    quizCount: list.length,
+    quizzesWithTiming: quizzesWithTiming
+  });
+
+  return serializeQuizEvaluationListForClient_(list);
 }
 
 function getQuizReviewList() {
@@ -1620,6 +1852,123 @@ function chunkArray_(items, chunkSize) {
   return chunks;
 }
 
+function countPendingInGroups_(questionOrder, groups) {
+  var total = 0;
+  var g;
+  for (g = 0; g < questionOrder.length; g++) {
+    total += groups[questionOrder[g]].entries.length;
+  }
+  return total;
+}
+
+function countEvaluationApiCalls_(questionOrder, groups) {
+  var total = 0;
+  var g;
+  for (g = 0; g < questionOrder.length; g++) {
+    var entryCount = groups[questionOrder[g]].entries.length;
+    total += Math.ceil(entryCount / EVAL_BATCH_SIZE_);
+  }
+  return total;
+}
+
+function estimateEvaluationDurationMs_(apiCallCount) {
+  var seconds = EVAL_ESTIMATE_SEC_OVERHEAD_ + (apiCallCount * EVAL_ESTIMATE_SEC_PER_API_CALL_);
+  return Math.round(seconds * 1000);
+}
+
+function roundEvaluationSeconds_(ms) {
+  return Math.round(ms / 100) / 10;
+}
+
+function formatEvaluationDuration_(seconds) {
+  seconds = Math.round(Number(seconds) * 10) / 10;
+  if (!isFinite(seconds) || seconds < 0) {
+    return '--';
+  }
+  if (seconds < 60) {
+    return seconds + ' sec';
+  }
+  var mins = Math.floor(seconds / 60);
+  var secs = Math.round(seconds - (mins * 60));
+  if (secs === 60) {
+    mins += 1;
+    secs = 0;
+  }
+  if (secs === 0) {
+    return mins + ' min';
+  }
+  return mins + ' min ' + secs + ' sec';
+}
+
+function getQuizDisplayNameForId_(questionsSheet, quizId) {
+  if (!quizId) {
+    return 'All quizzes';
+  }
+
+  var lastRow = questionsSheet.getLastRow();
+  if (lastRow < 2) {
+    return 'Unnamed Quiz';
+  }
+
+  var rows = questionsSheet.getRange('D2:E' + lastRow).getValues();
+  var i;
+  for (i = 0; i < rows.length; i++) {
+    if (String(rows[i][1]).trim() === quizId) {
+      return String(rows[i][0]).trim() || 'Unnamed Quiz';
+    }
+  }
+
+  return 'Unnamed Quiz';
+}
+
+function formatEvaluationAlertText_(result) {
+  if (typeof result === 'string') {
+    return result;
+  }
+
+  var lines = [result.message || 'AI evaluation completed.'];
+  lines.push(
+    result.questionCount + ' question' + (result.questionCount === 1 ? '' : 's') +
+    ' · ' + result.pendingCount + ' pending response' + (result.pendingCount === 1 ? '' : 's')
+  );
+  lines.push(
+    'Estimated time: ' + formatEvaluationDuration_(result.estimatedSec) +
+    ' · Actual time: ' + formatEvaluationDuration_(result.actualSec)
+  );
+  return lines.join('\n');
+}
+
+function logEvaluationTiming_(phase, details) {
+  var payload = {
+    event: 'evaluationTiming',
+    phase: phase
+  };
+  var key;
+  for (key in details) {
+    if (details.hasOwnProperty(key)) {
+      payload[key] = details[key];
+    }
+  }
+
+  if (payload.estimatedMs != null) {
+    payload.estimatedSec = roundEvaluationSeconds_(payload.estimatedMs);
+  }
+  if (payload.actualMs != null) {
+    payload.actualSec = roundEvaluationSeconds_(payload.actualMs);
+  }
+  if (payload.estimatedMs != null && payload.actualMs != null) {
+    payload.deltaMs = payload.actualMs - payload.estimatedMs;
+    payload.deltaSec = roundEvaluationSeconds_(payload.deltaMs);
+    if (payload.estimatedMs > 0) {
+      payload.deltaPct = Math.round((payload.deltaMs / payload.estimatedMs) * 1000) / 10;
+    }
+  }
+
+  var message = 'evaluation ' + phase;
+  var level = phase === 'failed' ? 'error' : 'info';
+  logQuizEvent_(level, 'evaluation', message, payload);
+}
+
 function extractJsonFromModelText_(text) {
   var raw = String(text || '').trim();
   if (!raw) {
@@ -1880,10 +2229,39 @@ function triggerEvaluation(quizId) {
   return triggerEvaluationByQuestion_(quizId);
 }
 
-function triggerEvaluationByQuestion_(quizId) {
-  // Set ANTHROPIC_API_KEY in Apps Script: Project Settings > Script Properties.
+function buildEvaluationSteps_(questionsSheet, questionOrder, groups) {
+  var steps = [];
+  var g;
+  var b;
+
+  for (g = 0; g < questionOrder.length; g++) {
+    var groupKey = questionOrder[g];
+    var group = groups[groupKey];
+    var questionId = group.questionId;
+    var rowQuizId = group.quizId;
+    var qr = questionId
+      ? getQuestionAndRubricByQuestionId_(questionsSheet, questionId, rowQuizId, true)
+      : { questionText: '', rubricText: '' };
+    var question = qr.questionText || qr.question || '';
+    var rubric = qr.rubricText || qr.rubric || '';
+    var batches = chunkArray_(group.entries, EVAL_BATCH_SIZE_);
+
+    for (b = 0; b < batches.length; b++) {
+      steps.push({
+        questionId: questionId,
+        rowQuizId: rowQuizId,
+        question: question,
+        rubric: rubric,
+        entries: batches[b]
+      });
+    }
+  }
+
+  return steps;
+}
+
+function buildEvaluationRunPlan_(quizId) {
   quizId = quizId ? String(quizId).trim() : '';
-  var anthropicApiKey = getAnthropicApiKey_();
 
   var ss = getQuizSpreadsheet_();
   var questionsSheet = ss.getSheetByName('Questions');
@@ -1897,8 +2275,8 @@ function triggerEvaluationByQuestion_(quizId) {
   }
 
   ensureResponsesHeaders_(responsesSheet);
-  var evalSheet = ensureSheet_(ss, 'Evaluations');
-  ensureEvaluationsHeaders_(evalSheet);
+  ensureSheet_(ss, 'Evaluations');
+  ensureEvaluationsHeaders_(ss.getSheetByName('Evaluations'));
 
   var lastRow = responsesSheet.getLastRow();
   var allResponses = responsesSheet.getRange('A2:F' + lastRow).getValues();
@@ -1915,64 +2293,154 @@ function triggerEvaluationByQuestion_(quizId) {
 
   var questionBank = quizId ? getQuestionBankForQuiz_(questionsSheet, quizId, true) : {};
   questionOrder = sortQuestionGroupKeys_(questionOrder, groups, questionBank);
+  var steps = buildEvaluationSteps_(questionsSheet, questionOrder, groups);
+  var estimatedApiCalls = steps.length;
 
-  var totalWritten = 0;
-  var batchCalls = 0;
-  var g;
+  return {
+    evalRunId: generateShortId_(),
+    startedAt: Date.now(),
+    quizId: quizId,
+    pendingCount: countPendingInGroups_(questionOrder, groups),
+    questionGroupCount: questionOrder.length,
+    estimatedMs: estimateEvaluationDurationMs_(estimatedApiCalls),
+    apiCallCount: estimatedApiCalls,
+    steps: steps,
+    batchCallsSoFar: 0,
+    responsesWrittenSoFar: 0
+  };
+}
 
-  for (g = 0; g < questionOrder.length; g++) {
-    var groupKey = questionOrder[g];
-    var group = groups[groupKey];
-    var questionId = group.questionId;
-    var rowQuizId = group.quizId;
+function executeEvaluationPlanStep_(plan, stepIndex, evalSheet, responsesSheet, anthropicApiKey) {
+  var step = plan.steps[stepIndex];
+  var batchResult;
+  var apiCallMade = false;
 
-    var qr = questionId
-      ? getQuestionAndRubricByQuestionId_(questionsSheet, questionId, rowQuizId, true)
-      : { questionText: '', rubricText: '' };
-    var question = qr.questionText || qr.question || '';
-    var rubric = qr.rubricText || qr.rubric || '';
+  if (!step.question && !step.rubric) {
+    batchResult = {
+      ok: false,
+      error: 'Skipped: no question or rubric found for question ID ' +
+        (step.questionId || '(missing)') + '.'
+    };
+  } else {
+    batchResult = callAnthropicBatchGrade_(anthropicApiKey, step.question, step.rubric, step.entries);
+    apiCallMade = true;
+  }
 
-    var batches = chunkArray_(group.entries, EVAL_BATCH_SIZE_);
-    var b;
+  var written = writeBatchEvaluationResults_(
+    evalSheet,
+    responsesSheet,
+    step.entries,
+    step.rubric,
+    step.questionId,
+    step.rowQuizId,
+    batchResult
+  );
 
-    for (b = 0; b < batches.length; b++) {
-      var entries = batches[b];
-      var batchResult;
+  return {
+    written: written,
+    apiCallMade: apiCallMade
+  };
+}
 
-      if (!question && !rubric) {
-        batchResult = {
-          ok: false,
-          error: 'Skipped: no question or rubric found for question ID ' +
-            (questionId || '(missing)') + '.'
-        };
-      } else {
-        batchResult = callAnthropicBatchGrade_(anthropicApiKey, question, rubric, entries);
-        batchCalls++;
-      }
+function buildEvaluationResult_(plan, actualMs) {
+  var summary = 'AI evaluation completed for ' + plan.responsesWrittenSoFar +
+    ' Pending response(s) using question-first batching (' +
+    plan.batchCallsSoFar + ' API call' + (plan.batchCallsSoFar === 1 ? '' : 's') +
+    '). Check the Evaluations tab.';
+  var ss = getQuizSpreadsheet_();
 
-      totalWritten += writeBatchEvaluationResults_(
+  var result = {
+    evalRunId: plan.evalRunId,
+    message: summary,
+    quizId: plan.quizId,
+    quizName: getQuizDisplayNameForId_(ss.getSheetByName('Questions'), plan.quizId),
+    questionCount: plan.questionGroupCount,
+    pendingCount: plan.pendingCount,
+    responsesWritten: plan.responsesWrittenSoFar,
+    apiCallCount: plan.batchCallsSoFar,
+    estimatedSec: roundEvaluationSeconds_(plan.estimatedMs),
+    actualSec: roundEvaluationSeconds_(actualMs),
+    deltaSec: roundEvaluationSeconds_(actualMs - plan.estimatedMs)
+  };
+
+  logEvaluationUiEvent_('serverResultReady', {
+    evalRunId: result.evalRunId,
+    quizId: result.quizId,
+    estimatedSec: result.estimatedSec,
+    actualSec: result.actualSec,
+    deltaSec: result.deltaSec,
+    pendingCount: result.pendingCount,
+    apiCallCount: result.apiCallCount
+  });
+
+  return result;
+}
+
+function triggerEvaluationByQuestion_(quizId) {
+  // Set ANTHROPIC_API_KEY in Apps Script: Project Settings > Script Properties.
+  var plan = buildEvaluationRunPlan_(quizId);
+
+  logEvaluationTiming_('started', {
+    evalRunId: plan.evalRunId,
+    quizId: plan.quizId || '(all)',
+    pendingCount: plan.pendingCount,
+    questionGroupCount: plan.questionGroupCount,
+    apiCallCount: plan.apiCallCount,
+    estimatedMs: plan.estimatedMs
+  });
+
+  var ss = getQuizSpreadsheet_();
+  var evalSheet = ensureSheet_(ss, 'Evaluations');
+  var responsesSheet = ss.getSheetByName('Responses');
+  ensureEvaluationsHeaders_(evalSheet);
+  ensureResponsesHeaders_(responsesSheet);
+  var anthropicApiKey = getAnthropicApiKey_();
+  var stepIndex;
+
+  try {
+    for (stepIndex = 0; stepIndex < plan.steps.length; stepIndex++) {
+      var stepResult = executeEvaluationPlanStep_(
+        plan,
+        stepIndex,
         evalSheet,
         responsesSheet,
-        entries,
-        rubric,
-        questionId,
-        rowQuizId,
-        batchResult
+        anthropicApiKey
       );
+      if (stepResult.apiCallMade) {
+        plan.batchCallsSoFar += 1;
+      }
+      plan.responsesWrittenSoFar += stepResult.written;
     }
+
+    SpreadsheetApp.flush();
+    var actualMs = Date.now() - plan.startedAt;
+
+    logEvaluationTiming_('completed', {
+      evalRunId: plan.evalRunId,
+      quizId: plan.quizId || '(all)',
+      pendingCount: plan.pendingCount,
+      responsesWritten: plan.responsesWrittenSoFar,
+      questionGroupCount: plan.questionGroupCount,
+      apiCallCount: plan.batchCallsSoFar,
+      estimatedMs: plan.estimatedMs,
+      actualMs: actualMs
+    });
+
+    return buildEvaluationResult_(plan, actualMs);
+  } catch (error) {
+    logEvaluationTiming_('failed', {
+      evalRunId: plan.evalRunId,
+      quizId: plan.quizId || '(all)',
+      pendingCount: plan.pendingCount,
+      responsesWritten: plan.responsesWrittenSoFar,
+      questionGroupCount: plan.questionGroupCount,
+      apiCallCount: plan.batchCallsSoFar,
+      estimatedMs: plan.estimatedMs,
+      actualMs: Date.now() - plan.startedAt,
+      error: error.message
+    });
+    throw error;
   }
-
-  SpreadsheetApp.flush();
-
-  var summary = 'AI evaluation completed for ' + totalWritten +
-    ' Pending response(s) using question-first batching (' +
-    batchCalls + ' API call' + (batchCalls === 1 ? '' : 's') + '). Check the Evaluations tab.';
-
-  if (quizId) {
-    return summary;
-  }
-
-  return summary;
 }
 
 function debugQuizState() {
@@ -2140,4 +2608,403 @@ function seedHistogramPilotQuiz() {
     responseCount: responseRows.length,
     studentCount: students.length
   };
+}
+
+function seedExtendedHistogramPilotQuizWithAlert() {
+  try {
+    var result = seedExtendedHistogramPilotQuiz();
+    SpreadsheetApp.getUi().alert(
+      'Extended histogram pilot quiz created.\n\n' +
+      'Quiz: ' + result.quizName + '\n' +
+      'Quiz ID: ' + result.quizId + '\n' +
+      'Questions in sheet: ' + result.questionIds.length + '\n' +
+      'Students: ' + result.studentCount + '\n' +
+      'Response rows (students x questions): ' + result.responseCount + '\n' +
+      'Expected API calls at evaluate: ' + result.expectedApiCalls
+    );
+  } catch (error) {
+    SpreadsheetApp.getUi().alert('Could not seed extended pilot quiz:\n\n' + error.message);
+  }
+}
+
+function seedExtendedHistogramPilotQuiz() {
+  var quizName = 'Histograms Extended Pilot Quiz';
+  var ss = getQuizSpreadsheet_();
+  var questionsSheet = ensureSheet_(ss, 'Questions');
+  ensureQuestionsHeaders_(questionsSheet);
+  var responsesSheet = ensureSheet_(ss, 'Responses');
+  ensureResponsesHeaders_(responsesSheet);
+
+  if (findQuizIdByName_(questionsSheet, quizName)) {
+    throw new Error(
+      'A quiz named "' + quizName + '" already exists. Delete those question rows (and related responses) before seeding again.'
+    );
+  }
+
+  var questions = getExtendedPilotQuestionBank_();
+  var quizId = generateUniqueQuizId_(questionsSheet);
+  var questionIds = [];
+  var q;
+  for (q = 0; q < questions.length; q++) {
+    questionIds.push(generateUniqueQuestionId_(questionsSheet));
+  }
+
+  var startRow = getNextQuestionsRow_(questionsSheet);
+  var questionRows = [];
+  for (q = 0; q < questions.length; q++) {
+    questionRows.push([
+      startRow + q,
+      questions[q].text,
+      questions[q].rubric,
+      quizName,
+      quizId,
+      questionIds[q],
+      ''
+    ]);
+  }
+  questionsSheet
+    .getRange('A' + startRow + ':G' + (startRow + questions.length - 1))
+    .setValues(questionRows);
+
+  var students = buildExtendedPilotStudents_(questions.length);
+  var timestamp = new Date();
+  var responseRows = [];
+  var i;
+  for (i = 0; i < students.length; i++) {
+    if (students[i].answers.length !== questions.length) {
+      throw new Error(
+        'Seed data mismatch for ' + students[i].name + ': expected ' +
+        questions.length + ' answers, got ' + students[i].answers.length + '.'
+      );
+    }
+    var s;
+    for (s = 0; s < questions.length; s++) {
+      responseRows.push([
+        timestamp,
+        students[i].name,
+        students[i].answers[s],
+        'Pending',
+        questionIds[s],
+        quizId
+      ]);
+    }
+  }
+
+  var responseStartRow = getNextResponseRow_(responsesSheet);
+  responsesSheet
+    .getRange('A' + responseStartRow + ':F' + (responseStartRow + responseRows.length - 1))
+    .setValues(responseRows);
+  SpreadsheetApp.flush();
+
+  var batchesPerQuestion = Math.ceil(students.length / EVAL_BATCH_SIZE_);
+  var expectedApiCalls = questions.length * batchesPerQuestion;
+
+  logQuizEvent_('info', 'seedExtendedHistogramPilotQuiz', 'extended pilot quiz seeded', {
+    quizName: quizName,
+    quizId: quizId,
+    questionIds: questionIds,
+    studentCount: students.length,
+    responseCount: responseRows.length,
+    expectedApiCalls: expectedApiCalls
+  });
+
+  return {
+    quizName: quizName,
+    quizId: quizId,
+    questionIds: questionIds,
+    responseCount: responseRows.length,
+    studentCount: students.length,
+    expectedApiCalls: expectedApiCalls
+  };
+}
+
+function getExtendedPilotQuestionBank_() {
+  return [
+    {
+      text:
+        'The histogram summarizes pages read per week for 30 students. Bin counts: 0-10 pages: 8 students; ' +
+        '11-20 pages: 6 students; 21-30 pages: 4 students; 31-40 pages: 2 students; 41-50 pages: 1 student; ' +
+        '51-60 pages: 1 student. Describe the shape of this distribution. State whether it is symmetric, ' +
+        'skewed left, or skewed right. Identify the most common bin and explain what the tail shows.',
+      rubric:
+        'Requested facts: distribution is unimodal; correctly identifies right skew and explains the tail extends ' +
+        'toward higher page counts; identifies 0-10 pages as the most common bin with 8 students; notes fewer students ' +
+        'in higher bins forming the tail; clear answer tied to the data. Common misconceptions: symmetric or left skew ' +
+        'without evidence; naming the peak only without shape or tail reasoning.'
+    },
+    {
+      text:
+        'The histogram shows hours of sleep per night for 30 students. Bin counts: 4-5 hours: 2 students; ' +
+        '5-6 hours: 4 students; 6-7 hours: 9 students; 7-8 hours: 10 students; 8-9 hours: 4 students; ' +
+        '9-10 hours: 1 student. Describe the center and spread of this distribution. Give a reasonable typical ' +
+        'value and explain how much variability you see, using evidence from the bins.',
+      rubric:
+        'Requested facts: center estimate in the 6-8 hour range with justification from the highest bins ' +
+        '(6-7: 9 students, 7-8: 10 students); describes spread/variability using the range across bins ' +
+        '(roughly 4-5 to 9-10 hours) or similar reasoning; notes the distribution is approximately symmetric; ' +
+        'cites specific bin counts as evidence. Partial understanding: center OR spread alone without the other.'
+    },
+    {
+      text:
+        'Histogram A shows minutes to walk to school for 25 students. Bin counts: 0-5 min: 2; 6-10 min: 4; ' +
+        '11-15 min: 8; 16-20 min: 7; 21-25 min: 3; 26-30 min: 1. Histogram B shows daily minutes of homework ' +
+        'for the same 25 students. Bin counts: 0-15 min: 1; 16-30 min: 3; 31-45 min: 5; 46-60 min: 8; ' +
+        '61-75 min: 5; 76-90 min: 2; 91-105 min: 1. Which distribution has greater spread? Explain using ' +
+        'evidence from the bin ranges and counts.',
+      rubric:
+        'Requested facts: Histogram B has greater spread; B spans roughly 0-105 minutes versus A spanning roughly ' +
+        '0-30 minutes; cites specific bin ranges as evidence; explains spread as wider range or more variability ' +
+        'across bins; may note A is more clustered. Common misconceptions: picks A because it has more bins in the ' +
+        'middle; confuses spread with skew; compares tallest bars without discussing range.'
+    },
+    {
+      text:
+        'A histogram of quiz scores for 28 students has bins: 50-59: 1 student; 60-69: 4 students; 70-79: 7 students; ' +
+        '80-89: 11 students; 90-99: 5 students. Describe the shape of the distribution and identify the most common ' +
+        'score range. Is the distribution skewed? Explain using evidence from the bins.',
+      rubric:
+        'Requested facts: unimodal distribution; peak or most common bin is 80-89 with 11 students; shape is ' +
+        'approximately symmetric or slightly left-skewed with justification from fewer students in low versus high ' +
+        'extreme bins; uses bin counts as evidence. Common misconceptions: wrong peak bin; claims heavy skew without ' +
+        'evidence; describes shape without naming the modal bin.'
+    },
+    {
+      text:
+        'A histogram of insects per plant has bins: 0-2 insects: 6 plants; 3-5 insects: 9 plants; 6-8 insects: 5 plants; ' +
+        '9-11 insects: 0 plants; 12-14 insects: 3 plants. A student claims the empty 9-11 bin proves no plant ever has ' +
+        '9 to 11 insects. Evaluate that claim. What might the gap between 6-8 and 12-14 represent?',
+      rubric:
+        'Requested facts: empty bin does not prove no values exist in that range; notes 12-14 bin has 3 plants so ' +
+        'higher counts do occur; explains gap may reflect bin width, clustering, or limited sample rather than ' +
+        'impossibility; rejects the absolute claim. Common misconceptions: treats empty bin as proof of zero frequency ' +
+        'in the population; ignores nearby nonzero bins.'
+    },
+    {
+      text:
+        'Histogram A shows daily screen time (minutes) for 20 students: 0-30: 1; 31-60: 3; 61-90: 6; 91-120: 7; ' +
+        '121-150: 3. Histogram B shows daily exercise time (minutes) for the same students: 0-15: 4; 16-30: 8; ' +
+        '31-45: 5; 46-60: 2; 61-75: 1. Which distribution has a higher typical value? Estimate the center of each ' +
+        'and compare using evidence from the bins.',
+      rubric:
+        'Requested facts: screen time (A) has higher typical value than exercise (B); A center near 91-120 with ' +
+        'justification from the 7 students in that bin and neighboring bins; B center near 16-30 with justification ' +
+        'from the 8 students there; compares both centers explicitly. Common misconceptions: picks taller total bins ' +
+        'without comparing scales; confuses spread with center.'
+    },
+    {
+      text:
+        'A histogram of customer wait times (minutes) has bins: 0-2: 12 customers; 3-5: 8 customers; 6-8: 3 customers; ' +
+        '9-11: 1 customer; 12-14: 0 customers; 15-17: 4 customers. Describe the shape. Is it skewed left, skewed right, ' +
+        'or roughly symmetric? Use the bin counts to justify your answer.',
+      rubric:
+        'Requested facts: identifies right skew with most customers in low wait bins and a tail toward higher waits; ' +
+        'notes concentration in 0-5 minutes (20 customers) versus fewer in high bins including 15-17 (4 customers); ' +
+        'may mention gap at 12-14 without claiming impossibility. Common misconceptions: symmetric because bins exist ' +
+        'on both sides; left skew because low bins are on the left side of the axis.'
+    },
+    {
+      text:
+        'Two classes took the same quiz. Class 1 scores (20 students): 50-59: 0; 60-69: 2; 70-79: 5; 80-89: 8; 90-99: 5. ' +
+        'Class 2 scores (20 students): 50-59: 3; 60-69: 6; 70-79: 7; 80-89: 3; 90-99: 1. Which class has greater spread ' +
+        'in scores? Which class has a higher typical score? Answer both parts with evidence from the bins.',
+      rubric:
+        'Requested facts: Class 2 has greater spread with counts across a wider range including more low scores ' +
+        '(50-59: 3, 60-69: 6) and fewer high scores; Class 1 has higher typical score with peak at 80-89 (8 students) ' +
+        'versus Class 2 peak at 70-79 (7 students) and more low-end counts; cites bin evidence for both spread and center. ' +
+        'Common misconceptions: confuses taller middle bar with spread; compares only one class for both parts.'
+    }
+  ];
+}
+
+function buildExtendedPilotStudents_(questionCount) {
+  var names = [
+    'Alex Chen', 'Jordan Lee', 'Sam Rivera', 'Taylor Kim', 'Morgan Davis',
+    'Riley Patel', 'Casey Nguyen', 'Jamie Okafor', 'Avery Brooks', 'Quinn Martinez',
+    'Drew Sullivan', 'Skyler Tan', 'Cameron Walsh', 'Reese Johnson', 'Parker Gomez',
+    'Hayden Wright'
+  ];
+  var tiers = [
+    'strong', 'mixed', 'strong', 'mixed', 'weak',
+    'strong', 'mixed', 'weak', 'mixed', 'strong',
+    'mixed', 'weak', 'mixed', 'strong', 'mixed', 'weak'
+  ];
+  var students = [];
+  var i;
+  for (i = 0; i < names.length; i++) {
+    students.push({
+      name: names[i],
+      answers: buildExtendedPilotAnswersForTier_(tiers[i], i, questionCount)
+    });
+  }
+  return students;
+}
+
+function buildExtendedPilotAnswersForTier_(tier, index, questionCount) {
+  var pools = getExtendedPilotAnswerPools_();
+  var answers = [];
+  var q;
+  for (q = 0; q < questionCount; q++) {
+    var pool = pools[q];
+    if (!pool) {
+      throw new Error('Missing answer pool for extended pilot question ' + (q + 1) + '.');
+    }
+    var tierPool = pool[tier] || pool.weak;
+    answers.push(tierPool[index % tierPool.length]);
+  }
+  return answers;
+}
+
+function getExtendedPilotAnswerPools_() {
+  return [
+    {
+      strong: [
+        'The distribution is unimodal and right-skewed. The peak is the 0-10 pages bin with 8 students, so most students ' +
+          'read relatively few pages. The tail extends toward higher page counts with fewer students in each bin from ' +
+          '21-30 upward, including 1 student in 51-60. It is not symmetric because the tail is on the right.',
+        'Unimodal with a right skew: the highest bar is 0-10 pages (8 students) and counts drop as pages increase, ' +
+          'forming a long tail to the right toward 51-60 pages.'
+      ],
+      mixed: [
+        'The histogram is unimodal with the highest bar at 0-10 pages (8 students). I think it is roughly symmetric ' +
+          'because the counts look somewhat balanced around the middle bins near 11-20 pages.',
+        'Most students read between 0 and 10 pages per week because that bin has 8 people. A few students read more ' +
+          'in higher bins, but I am not sure about the exact shape name.',
+        'The shape is skewed left because more students are on the left side of the histogram. The most common bin is 0-10 pages.'
+      ],
+      weak: [
+        'It goes up and then down.',
+        'A lot of students read books.',
+        'The histogram has bars.'
+      ]
+    },
+    {
+      strong: [
+        'The center is around 7 hours of sleep because the 7-8 bin has 10 students and the 6-7 bin has 9. The ' +
+          'distribution is fairly symmetric with most values between 6 and 8 hours. Spread is moderate: students range ' +
+          'from about 4-5 hours up to 9-10 hours, roughly a 5-hour spread across bins.',
+        'Typical sleep is near 7 hours since the 6-7 and 7-8 bins dominate (9 and 10 students). Variability spans ' +
+          'from 4-5 to 9-10 hours, so the distribution is symmetric with moderate spread.'
+      ],
+      mixed: [
+        'Typical sleep is about 7 hours since the 7-8 bin is largest with 10 students. Students vary from around ' +
+          '4-5 hours to 9-10 hours, so there is noticeable variability.',
+        'The middle is around 7-8 hours because those bins have the most students. Some sleep less and some sleep more.',
+        'Center is about 7 hours. Spread is big because the bin counts are different across the histogram.'
+      ],
+      weak: [
+        'Most people sleep around 7 hours.',
+        'Sleep varies.',
+        'The 7-8 bin is tallest.'
+      ]
+    },
+    {
+      strong: [
+        'Histogram B has greater spread. Homework minutes range from about 0-15 up to 91-105, while walk times only ' +
+          'range from 0-5 to 26-30 minutes. B is spread across many wider bins with counts in both low and high ranges, ' +
+          'whereas A is clustered mostly between 6 and 20 minutes.',
+        'B has more spread because its values cover roughly 105 minutes compared to about 30 minutes for A. The homework ' +
+          'bins extend much farther on both ends, showing more variability than commute times.'
+      ],
+      mixed: [
+        'Histogram A has more spread because it has more bins with students in them across the middle range from 6-30 minutes.',
+        'They look about the same spread to me because both have several bins with counts.',
+        'B has greater spread, but mainly because the tallest bar in B is higher.'
+      ],
+      weak: [
+        'Histogram A because it is longer.',
+        'I am not sure.',
+        'The one with more students.'
+      ]
+    },
+    {
+      strong: [
+        'The distribution is unimodal and approximately symmetric. The most common score range is 80-89 with 11 students. ' +
+          'Counts decrease toward both tails, with only 1 student in 50-59 and 5 in 90-99, so there is no strong skew.',
+        'Unimodal with peak at 80-89 (11 students). Shape is roughly symmetric since the lower and upper tails have similar ' +
+          'declining counts (1 in 50-59 versus 5 in 90-99, with gradual steps in between).'
+      ],
+      mixed: [
+        'The most common range is 80-89. I think it is skewed right because the high scores go up to 90-99.',
+        'Peak is 70-79 with 7 students. The shape is skewed left.',
+        'Most students scored in the 80s. The distribution has a tail.'
+      ],
+      weak: [
+        'Most students did well.',
+        'The middle bin is biggest.',
+        'Scores go from 50 to 99.'
+      ]
+    },
+    {
+      strong: [
+        'The empty 9-11 bin does not prove no plant ever has 9 to 11 insects. Three plants fall in 12-14, so higher counts ' +
+          'occur just above the gap. The gap may reflect how bins are cut or natural clustering, not that those values are impossible.',
+        'A zero count in one bin only means none of the sampled plants landed there. Because 12-14 has 3 plants, the claim is ' +
+          'too strong; the gap likely separates two clusters rather than proving none exist between them.'
+      ],
+      mixed: [
+        'The student might be wrong because bugs could still be between 9 and 11 even if this sample has none there.',
+        'The gap means no plants had exactly 9-11 insects in this data set, but that might change with more plants.',
+        'I think the claim is true because the bin is empty.'
+      ],
+      weak: [
+        'The bin is zero so there are no insects in that range.',
+        'Gaps mean nothing.',
+        'There are insects.'
+      ]
+    },
+    {
+      strong: [
+        'Screen time (A) has a higher typical value. Its center is near 91-120 minutes with 7 students there and strong counts ' +
+          'in neighboring bins, while exercise (B) centers near 16-30 minutes with 8 students. A is clearly higher on average.',
+        'Histogram A is centered higher: most screen times cluster around 61-150 minutes, especially 91-120, whereas exercise ' +
+          'clusters around 16-30 with 8 students.'
+      ],
+      mixed: [
+        'Screen time is higher because the tallest bar in A is 91-120. Exercise might be similar because both have a peak bin.',
+        'Exercise is higher because 16-30 has 8 students.',
+        'A is higher but I am not sure about the center of B.'
+      ],
+      weak: [
+        'Screen time.',
+        'They are the same.',
+        'Exercise is higher.'
+      ]
+    },
+    {
+      strong: [
+        'The distribution is right-skewed. Most customers wait 0-5 minutes (20 total in 0-2 and 3-5 bins), with a tail toward ' +
+          'longer waits including 15-17 minutes (4 customers). It is not symmetric because the tail extends to the right.',
+        'Right-skewed: counts are highest at short waits and taper toward longer waits, with only 1 customer in 9-11 and 4 in 15-17.'
+      ],
+      mixed: [
+        'Roughly symmetric because there are customers in low and high bins.',
+        'Left-skewed because the low bins are on the left.',
+        'Most people wait a short time but I cannot name the skew.'
+      ],
+      weak: [
+        'A lot of short waits.',
+        'Symmetric.',
+        'The histogram goes down.'
+      ]
+    },
+    {
+      strong: [
+        'Class 2 has greater spread with more scores in low bins (50-59: 3, 60-69: 6) and only 1 in 90-99, while Class 1 is ' +
+          'more concentrated high with peak 80-89 (8 students). Class 1 has the higher typical score because its center is ' +
+          'around 80-89 versus Class 2 peaking at 70-79 (7 students).',
+        'Spread is larger in Class 2 because scores range more widely across low and middle bins. Class 1 has higher typical ' +
+          'scores with 8 students in 80-89 and 5 in 90-99 compared with Class 2\'s peak at 70-79.'
+      ],
+      mixed: [
+        'Class 1 has greater spread because it has more students in 80-89. Class 2 has the higher typical score.',
+        'Class 2 spreads more. Class 1 is higher because of the 90-99 bin only.',
+        'They are about the same on both measures.'
+      ],
+      weak: [
+        'Class 1 on both.',
+        'Class 2 on both.',
+        'The classes are different.'
+      ]
+    }
+  ];
 }

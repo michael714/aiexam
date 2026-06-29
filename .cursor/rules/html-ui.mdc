@@ -25,10 +25,11 @@ alwaysApply: false
 
 Modal overlay during async work:
 
-- `#processingOverlay`, `#processingSpinner`, `#processingMessage`
-- `showProcessing(message)` — spinner + message
-- `showDone(message)` — checkmark + brief auto-dismiss (~700 ms)
-- `hideProcessing()` — immediate dismiss (errors)
+- `#processingOverlay`, `#processingSpinner`, `#processingMessage`, `#processingDismissBtn` (OK)
+- `showProcessing(message)` — spinner + message; hides OK button
+- `showDone(message, onDismiss)` — checkmark + message + **OK** button; **no auto-dismiss**; optional callback on OK (used after evaluation to reload list)
+- `dismissProcessing()` — hides overlay; runs `onDismiss` callback if set
+- `hideProcessing()` — immediate dismiss (errors); clears callback
 
 Use on: quiz load, submit, save question, evaluate, review load, save evaluation edit.
 
@@ -41,7 +42,11 @@ Nav order: **Add Question** | **Evaluate** | **Review**
 - **Add Question** — form + optional PNG/GIF (max 1 MB); preview + **Remove image**
   - Save: single call `addQuestionAndRubric({ quizName, question, rubric, imageData })`
   - Helpers: `readQuestionImageFile`, `clearQuestionImage`, `setQuestionImage`
-- **Evaluate** → `getQuizEvaluationList()`, **Evaluate** → `triggerEvaluation(quizId)`; overlay: "Running batch evaluation..."
+- **Evaluate** → `getQuizEvaluationList()` on tab load; **Evaluate** button → `triggerEvaluation(quizId)` (single server call)
+  - Lists **all** quizzes from Questions; button disabled when `pendingCount === 0`
+  - Each card shows `.quiz-card-timing` lines from `quiz.lastEvaluation` (last completed log timing — visible without re-running evaluate)
+  - After run: `finishEvaluationUi` logs via `logTeacherEvaluateEvent` → `logFromClient`; shows `#evaluateMessage` summary; **Done** overlay until user clicks OK; then `loadEvaluateView(true)` refreshes cards
+  - Hybrid timing on fresh run: server `estimatedSec` + client-measured wait time (`clientStartedAt` → success handler)
 - **Review** → `getQuizReviewList()`, `getEvaluationsForQuiz(quizId)`; lazy images via `getQuestionImage` + `reviewState.imageCache`
 
 Review detail layout (top to bottom):
@@ -83,6 +88,8 @@ Do not use `id="questionText"` on student page.
 **Student `getQuestionsForQuiz`:** `questionId`, `questionText`, `hasImage`, `number`
 
 **Student `getQuestionImage`:** `imageData`, `hasImage`, `quizId`, `questionId`
+
+**Evaluate `getQuizEvaluationList`:** `quizId`, `quizName`, `questionCount`, `pendingCount`, `lastEvaluation` (`evalRunId`, `estimatedSec`, `actualSec`, `clientWaitSec`, `deltaSec`, `completedAt` as ISO string)
 
 **Review `getEvaluationsForQuiz`:** `questionText`, `qPrompt`, `answerText`, `rubricText`, `evaluationText`, `hasImage`, `questionNumber`, `studentName` (via item fields)
 

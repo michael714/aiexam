@@ -217,6 +217,22 @@
         display: block;
       }
 
+      .evaluation-result-title {
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+
+      .evaluation-result-meta,
+      .evaluation-result-timing {
+        color: #137333;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .evaluation-result-timing {
+        margin-top: 4px;
+      }
+
       .loading {
         color: #5f6368;
         font-size: 14px;
@@ -256,6 +272,13 @@
       .quiz-card-meta {
         color: #5f6368;
         font-size: 13px;
+      }
+
+      .quiz-card-timing {
+        color: #137333;
+        font-size: 13px;
+        line-height: 1.45;
+        margin-top: 6px;
       }
 
       .empty-state {
@@ -487,6 +510,12 @@
         font-weight: 500;
       }
 
+      .processing-dismiss-btn {
+        display: none;
+        margin-top: 18px;
+        min-width: 88px;
+      }
+
       @keyframes spin {
         to { transform: rotate(360deg); }
       }
@@ -618,6 +647,7 @@
       <div class="processing-dialog">
         <div id="processingSpinner" class="processing-spinner"></div>
         <div id="processingMessage" class="processing-message">Processing...</div>
+        <button type="button" id="processingDismissBtn" class="primary processing-dismiss-btn" onclick="dismissProcessing()">OK</button>
       </div>
     </div>
 
@@ -634,27 +664,55 @@
       var pendingQuestionImageData = '';
       var MAX_QUESTION_IMAGE_BYTES = 1048576;
       var processingTimer = null;
+      var processingDismissCallback = null;
+
+      function logTeacherEvaluateEvent(message, details) {
+        try {
+          google.script.run.logFromClient(
+            'info',
+            'teacherEvaluate',
+            message,
+            JSON.stringify(details || {})
+          );
+        } catch (logError) {
+          // Ignore logging failures in the UI.
+        }
+      }
 
       function showProcessing(message) {
         if (processingTimer) {
           clearTimeout(processingTimer);
           processingTimer = null;
         }
+        processingDismissCallback = null;
         document.getElementById('processingSpinner').className = 'processing-spinner';
         document.getElementById('processingSpinner').textContent = '';
         document.getElementById('processingMessage').textContent = message || 'Processing...';
+        document.getElementById('processingDismissBtn').style.display = 'none';
         document.getElementById('processingOverlay').style.display = 'flex';
       }
 
-      function showDone(message) {
+      function showDone(message, onDismiss) {
+        if (processingTimer) {
+          clearTimeout(processingTimer);
+          processingTimer = null;
+        }
+        processingDismissCallback = onDismiss || null;
         var spinner = document.getElementById('processingSpinner');
         spinner.className = 'processing-spinner done';
         spinner.textContent = '\u2713';
         document.getElementById('processingMessage').textContent = message || 'Done!';
-        processingTimer = setTimeout(function() {
-          document.getElementById('processingOverlay').style.display = 'none';
-          processingTimer = null;
-        }, 700);
+        document.getElementById('processingDismissBtn').style.display = 'inline-block';
+        document.getElementById('processingOverlay').style.display = 'flex';
+      }
+
+      function dismissProcessing() {
+        hideProcessing();
+        if (processingDismissCallback) {
+          var callback = processingDismissCallback;
+          processingDismissCallback = null;
+          callback();
+        }
       }
 
       function hideProcessing() {
@@ -662,6 +720,8 @@
           clearTimeout(processingTimer);
           processingTimer = null;
         }
+        processingDismissCallback = null;
+        document.getElementById('processingDismissBtn').style.display = 'none';
         document.getElementById('processingOverlay').style.display = 'none';
       }
 
@@ -691,7 +751,9 @@
       }
 
       function loadEvaluateView(skipProcessing) {
-        clearPanelMessage('evaluateMessage');
+        if (!skipProcessing) {
+          clearPanelMessage('evaluateMessage');
+        }
         document.getElementById('evaluateQuizList').innerHTML =
           '<div class="empty-state">Loading quizzes...</div>';
         if (!skipProcessing) {
@@ -700,10 +762,12 @@
 
         google.script.run
           .withSuccessHandler(function(quizzes) {
-            if (!skipProcessing) {
-              hideProcessing();
-            }
+            hideProcessing();
             renderEvaluateQuizList(quizzes);
+            logTeacherEvaluateEvent('evaluate list rendered', {
+              quizCount: quizzes ? quizzes.length : 0,
+              quizzesWithTiming: countQuizzesWithTiming_(quizzes)
+            });
           })
           .withFailureHandler(function(err) {
             hideProcessing();
@@ -714,12 +778,49 @@
           .getQuizEvaluationList();
       }
 
+      function countQuizzesWithTiming_(quizzes) {
+        if (!quizzes || !quizzes.length) {
+          return 0;
+        }
+        var count = 0;
+        for (var i = 0; i < quizzes.length; i++) {
+          if (quizzes[i].lastEvaluation) {
+            count++;
+          }
+        }
+        return count;
+      }
+
+      function formatLastEvaluationLines(quiz) {
+        var timing = quiz.lastEvaluation;
+        if (!timing) {
+          return ['No evaluation timing logged yet for this quiz.'];
+        }
+
+        var lines = [
+          'Last evaluation: estimated ' + formatEvaluationDuration(timing.estimatedSec) +
+          ', server actual ' + formatEvaluationDuration(timing.actualSec)
+        ];
+
+        if (timing.clientWaitSec != null) {
+          lines.push('Client wait time: ' + formatEvaluationDuration(timing.clientWaitSec));
+        }
+        if (timing.deltaSec != null) {
+          var sign = timing.deltaSec >= 0 ? '+' : '-';
+          lines.push(
+            'Server estimate delta: ' + sign + formatEvaluationDuration(Math.abs(timing.deltaSec))
+          );
+        }
+        return lines;
+      }
+
       function renderEvaluateQuizList(quizzes) {
         renderQuizActionList('evaluateQuizList', quizzes, function(quiz) {
           var meta = quiz.questionCount + ' question' + (quiz.questionCount === 1 ? '' : 's') +
             ' · ' + quiz.pendingCount + ' pending response' + (quiz.pendingCount === 1 ? '' : 's');
           return {
             meta: meta,
+            extraLines: formatLastEvaluationLines(quiz),
             label: 'Evaluate',
             disabled: !quiz.pendingCount,
             onClick: function() {
@@ -738,14 +839,11 @@
 
         clearPanelMessage('evaluateMessage');
         showProcessing('Running batch evaluation...');
+        var clientStartedAt = Date.now();
 
         google.script.run
           .withSuccessHandler(function(result) {
-            showDone('Done!');
-            showPanelSuccess('evaluateMessage', result);
-            setTimeout(function() {
-              loadEvaluateView(true);
-            }, 750);
+            finishEvaluationUi(quiz, result, clientStartedAt);
           })
           .withFailureHandler(function(err) {
             hideProcessing();
@@ -753,6 +851,44 @@
             loadEvaluateView(true);
           })
           .triggerEvaluation(quiz.quizId);
+      }
+
+      function finishEvaluationUi(quiz, result, clientStartedAt) {
+        var clientActualSec = Math.round((Date.now() - clientStartedAt) / 100) / 10;
+        var evalRunId = result && result.evalRunId ? result.evalRunId : '';
+
+        logTeacherEvaluateEvent('finishEvaluationUi called', {
+          quizId: quiz.quizId,
+          quizName: quiz.quizName,
+          resultType: typeof result,
+          evalRunId: evalRunId,
+          clientWaitSec: clientActualSec,
+          estimatedSec: result && result.estimatedSec != null ? result.estimatedSec : null
+        });
+
+        if (typeof result === 'string') {
+          showPanelSuccess('evaluateMessage', result);
+          logTeacherEvaluateEvent('showPanelSuccess fallback', {
+            quizId: quiz.quizId,
+            resultPreview: String(result).substring(0, 120)
+          });
+        } else {
+          showEvaluationResult('evaluateMessage', result, quiz, clientActualSec);
+          logTeacherEvaluateEvent('showEvaluationResult rendered', {
+            quizId: quiz.quizId,
+            evalRunId: evalRunId
+          });
+        }
+
+        logTeacherEvaluateEvent('client timing reported', {
+          quizId: quiz.quizId,
+          evalRunId: evalRunId,
+          clientWaitSec: clientActualSec
+        });
+
+        showDone('Evaluation complete.', function() {
+          loadEvaluateView(true);
+        });
       }
 
       function loadReviewQuizList() {
@@ -819,6 +955,15 @@
 
           body.appendChild(title);
           body.appendChild(meta);
+
+          if (action.extraLines && action.extraLines.length) {
+            for (var e = 0; e < action.extraLines.length; e++) {
+              var timingLine = document.createElement('div');
+              timingLine.className = 'quiz-card-timing';
+              timingLine.textContent = action.extraLines[e];
+              body.appendChild(timingLine);
+            }
+          }
 
           var btn = document.createElement('button');
           btn.type = 'button';
@@ -1143,11 +1288,67 @@
         submitQuestion('');
       }
 
+      function formatEvaluationDuration(seconds) {
+        seconds = Math.round(Number(seconds) * 10) / 10;
+        if (!isFinite(seconds) || seconds < 0) {
+          return '--';
+        }
+        if (seconds < 60) {
+          return seconds + ' sec';
+        }
+        var mins = Math.floor(seconds / 60);
+        var secs = Math.round(seconds - (mins * 60));
+        if (secs === 60) {
+          mins += 1;
+          secs = 0;
+        }
+        if (secs === 0) {
+          return mins + ' min';
+        }
+        return mins + ' min ' + secs + ' sec';
+      }
+
+      function showEvaluationResult(elementId, result, quiz, clientActualSec) {
+        if (typeof result === 'string') {
+          showPanelSuccess(elementId, result);
+          return;
+        }
+
+        var message = document.getElementById(elementId);
+        message.className = 'message success';
+        message.innerHTML = '';
+
+        var quizName = (quiz && quiz.quizName) || result.quizName || 'Quiz evaluation';
+        var questionCount = (quiz && quiz.questionCount != null) ? quiz.questionCount : result.questionCount;
+        var pendingCount = (quiz && quiz.pendingCount != null) ? quiz.pendingCount : result.pendingCount;
+
+        var title = document.createElement('div');
+        title.className = 'evaluation-result-title';
+        title.textContent = quizName;
+
+        var meta = document.createElement('div');
+        meta.className = 'evaluation-result-meta';
+        meta.textContent =
+          questionCount + ' question' + (questionCount === 1 ? '' : 's') +
+          ' · ' + pendingCount + ' pending response' + (pendingCount === 1 ? '' : 's');
+
+        var timing = document.createElement('div');
+        timing.className = 'evaluation-result-timing';
+        timing.textContent =
+          'Estimated time: ' + formatEvaluationDuration(result.estimatedSec) +
+          ' · Actual wait time: ' + formatEvaluationDuration(clientActualSec);
+
+        message.appendChild(title);
+        message.appendChild(meta);
+        message.appendChild(timing);
+      }
+
       function clearPanelMessage(elementId) {
         var message = document.getElementById(elementId);
         message.className = 'message';
         message.style.display = 'none';
         message.textContent = '';
+        message.innerHTML = '';
       }
 
       function showPanelSuccess(elementId, text) {
