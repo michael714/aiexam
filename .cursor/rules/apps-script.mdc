@@ -66,7 +66,7 @@ Key helpers:
 - `getQuizEvaluationList()` — all quizzes + `pendingCount` + `lastEvaluation` (serialized; primitives only)
 - `triggerEvaluation(quizId)` — question-first batch grading; omit `quizId` to grade all (menu); returns result object with `evalRunId`, `estimatedSec`, `actualSec`, etc.
 - `getQuizReviewList()` — quizzes + evaluated counts
-- `getEvaluationsForQuiz(quizId)` — returns `hasImage` (not `imageData`); lazy image load on client
+- `getEvaluationsForQuiz(quizId)` — returns `hasImage` (not `imageData`); lazy image load on client; server sorts student-first (client re-sorts in `teacher.html` Review UI)
 - `updateEvaluation(row, evaluationText)` — teacher edit of column E
 - `seedHistogramPilotQuiz()` / `seedHistogramPilotQuizWithAlert()` — 2-question pilot + 5 student responses
 - `seedExtendedHistogramPilotQuiz()` / `seedExtendedHistogramPilotQuizWithAlert()` — 8-question pilot + 16 students (128 responses)

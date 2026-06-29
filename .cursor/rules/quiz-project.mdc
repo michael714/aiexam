@@ -48,7 +48,7 @@ Questions in the same quiz share **quiz name** (D) and **quiz ID** (E). Each que
 
 1. **Add Question** — quiz name, question, rubric, optional image; reusing quiz name reuses quiz ID.
 2. **Evaluate** — lists **all quizzes** from Questions (not only those with Pending responses). **Evaluate** is disabled when `pendingCount === 0`. Each card shows **last evaluation timing** from Logs (estimated + server actual; client wait when logged). Run grading via `triggerEvaluation(quizId)` (single server call, question-first batching).
-3. **Review** — pick a quiz; browse evaluations; **Previous/Next** at top and bottom; footer shows current student + question; **Edit Evaluation** → `updateEvaluation`.
+3. **Review** — pick a quiz; browse evaluations in a **2×2 grid** (Question | Student Response, Rubric | AI Evaluation) designed to fit above the fold without page scroll. **Sort by Student** (default) or **Question** (client-side; mirrors question-first AI grading). **Previous/Next** at top and bottom; footer shows current student + question; **Edit Evaluation** → `updateEvaluation`.
 
 Spreadsheet menu: **Quiz → Run AI Evaluation**, **Seed Histogram Pilot Quiz**, **Seed Extended Pilot Quiz**, **Clear all quiz data...**, **Open Logs**, **Authorize API access**, **Set up sheets**.
 

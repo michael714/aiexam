@@ -26,6 +26,10 @@
         padding: 32px 36px 36px;
       }
 
+      .container:has(#review-detail.active) {
+        max-width: 1040px;
+      }
+
       h1 {
         color: #1a73e8;
         font-size: 28px;
@@ -323,6 +327,43 @@
         padding: 12px 16px;
       }
 
+      .review-sort-row {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .review-sort-label {
+        color: #5f6368;
+        font-size: 13px;
+        font-weight: 500;
+      }
+
+      .review-sort-btn {
+        background: transparent;
+        border: 1px solid #dadce0;
+        border-radius: 16px;
+        color: #5f6368;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 500;
+        padding: 5px 14px;
+        transition: background 0.2s, color 0.2s, border-color 0.2s;
+      }
+
+      .review-sort-btn:hover {
+        background: #f1f3f4;
+        color: #202124;
+      }
+
+      .review-sort-btn.active {
+        background: #e8f0fe;
+        border-color: #c2d7fa;
+        color: #1a73e8;
+      }
+
       .review-nav-row-top {
         align-items: center;
         display: flex;
@@ -372,6 +413,78 @@
 
       .content-block {
         margin-bottom: 18px;
+      }
+
+      .review-grid {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin: 16px 0 20px;
+      }
+
+      #review-detail .review-grid .content-block {
+        aspect-ratio: 2 / 1;
+        display: flex;
+        flex-direction: column;
+        margin-bottom: 0;
+        min-height: 0;
+        min-width: 0;
+      }
+
+      #review-detail .review-grid .content-label {
+        flex-shrink: 0;
+      }
+
+      #review-detail .review-grid-scroll {
+        -webkit-overflow-scrolling: touch;
+        flex: 1;
+        min-height: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+      }
+
+      #review-detail .review-grid .content-field {
+        flex: 0 0 auto;
+        margin-bottom: 0;
+        width: 100%;
+      }
+
+      #review-detail .review-grid .content-field.readonly-block {
+        min-height: 0;
+        overflow-wrap: break-word;
+        white-space: pre-wrap;
+      }
+
+      #review-detail .review-grid .content-field.eval-field {
+        box-sizing: border-box;
+        flex: 1 0 auto;
+        min-height: 100%;
+        overflow-y: auto;
+        resize: none;
+      }
+
+      #review-detail .review-grid .question-image {
+        flex-shrink: 0;
+        margin-bottom: 0;
+        margin-top: 10px;
+        max-height: 45%;
+        object-fit: contain;
+        width: 100%;
+      }
+
+      @media (max-width: 760px) {
+        .container:has(#review-detail.active) {
+          max-width: 820px;
+        }
+
+        .review-grid {
+          grid-template-columns: 1fr;
+        }
+
+        #review-detail .review-grid .content-block {
+          aspect-ratio: auto;
+          min-height: 140px;
+        }
       }
 
       .content-label {
@@ -571,7 +684,7 @@
       <section id="view-review" class="view-panel">
         <div id="review-quiz-list" class="review-subview active">
           <div class="section-title">Review Evaluations</div>
-          <p class="field-hint">Open a quiz to review AI feedback question by question and edit if needed.</p>
+          <p class="field-hint">Open a quiz to review AI feedback. Sort by student or by question to browse evaluations.</p>
           <div class="quiz-list" id="reviewQuizList">
             <div class="empty-state">Loading quizzes...</div>
           </div>
@@ -582,6 +695,11 @@
           <div class="review-header">
             <div class="review-header-title" id="reviewQuizTitle"></div>
             <div class="review-header-meta" id="reviewPositionMeta"></div>
+            <div class="review-sort-row">
+              <span class="review-sort-label">Sort by</span>
+              <button type="button" class="review-sort-btn active" data-review-sort="student" onclick="setReviewSortMode('student')">Student</button>
+              <button type="button" class="review-sort-btn" data-review-sort="question" onclick="setReviewSortMode('question')">Question</button>
+            </div>
             <div class="review-current-banner" id="reviewCurrentBanner"></div>
           </div>
 
@@ -595,25 +713,35 @@
             </div>
           </div>
 
-          <div class="content-block">
-            <span class="content-label">Question</span>
-            <div id="reviewQuestion" class="content-field question-field readonly-block"></div>
-            <img id="reviewQuestionImage" class="question-image" alt="Question image" style="display:none;">
-          </div>
+          <div class="review-grid">
+            <div class="content-block">
+              <span class="content-label">Question</span>
+              <div class="review-grid-scroll">
+                <div id="reviewQuestion" class="content-field question-field readonly-block"></div>
+                <img id="reviewQuestionImage" class="question-image" alt="Question image" style="display:none;">
+              </div>
+            </div>
 
-          <div class="content-block">
-            <span class="content-label">Student Answer</span>
-            <div id="reviewAnswer" class="content-field answer-field readonly-block"></div>
-          </div>
+            <div class="content-block">
+              <span class="content-label">Student Response</span>
+              <div class="review-grid-scroll">
+                <div id="reviewAnswer" class="content-field answer-field readonly-block"></div>
+              </div>
+            </div>
 
-          <div class="content-block">
-            <span class="content-label">Evaluation</span>
-            <textarea id="reviewEvaluation" class="content-field eval-field" readonly></textarea>
-          </div>
+            <div class="content-block">
+              <span class="content-label">Rubric</span>
+              <div class="review-grid-scroll">
+                <div id="reviewRubric" class="content-field rubric-field readonly-block"></div>
+              </div>
+            </div>
 
-          <div class="content-block">
-            <span class="content-label">Rubric</span>
-            <div id="reviewRubric" class="content-field rubric-field readonly-block"></div>
+            <div class="content-block">
+              <span class="content-label">AI Evaluation</span>
+              <div class="review-grid-scroll">
+                <textarea id="reviewEvaluation" class="content-field eval-field" readonly></textarea>
+              </div>
+            </div>
           </div>
 
           <div class="nav-row">
@@ -654,7 +782,9 @@
     <script>
       var reviewState = {
         quiz: null,
+        rawItems: [],
         items: [],
+        sortMode: 'student',
         currentIndex: 0,
         editing: false,
         originalEvaluation: '',
@@ -978,17 +1108,88 @@
         }
       }
 
+      function compareReviewItemsStudentFirst(a, b) {
+        var nameCompare = String(a.studentName).localeCompare(String(b.studentName));
+        if (nameCompare !== 0) {
+          return nameCompare;
+        }
+        return a.questionNumber - b.questionNumber;
+      }
+
+      function compareReviewItemsQuestionFirst(a, b) {
+        var questionCompare = a.questionNumber - b.questionNumber;
+        if (questionCompare !== 0) {
+          return questionCompare;
+        }
+        return String(a.studentName).localeCompare(String(b.studentName));
+      }
+
+      function sortReviewItems(items, sortMode) {
+        var sorted = items.slice();
+        var compare = sortMode === 'question'
+          ? compareReviewItemsQuestionFirst
+          : compareReviewItemsStudentFirst;
+        sorted.sort(compare);
+        return sorted;
+      }
+
+      function syncReviewSortButtons() {
+        var buttons = document.querySelectorAll('[data-review-sort]');
+        for (var i = 0; i < buttons.length; i++) {
+          buttons[i].classList.toggle(
+            'active',
+            buttons[i].getAttribute('data-review-sort') === reviewState.sortMode
+          );
+        }
+      }
+
+      function applyReviewSort(preserveRow) {
+        var anchorRow = preserveRow;
+        if (anchorRow === undefined && reviewState.items.length) {
+          var current = reviewState.items[reviewState.currentIndex];
+          anchorRow = current ? current.row : null;
+        }
+
+        reviewState.items = sortReviewItems(reviewState.rawItems, reviewState.sortMode);
+
+        if (anchorRow != null) {
+          for (var i = 0; i < reviewState.items.length; i++) {
+            if (reviewState.items[i].row === anchorRow) {
+              reviewState.currentIndex = i;
+              return;
+            }
+          }
+        }
+        reviewState.currentIndex = 0;
+      }
+
+      function setReviewSortMode(mode) {
+        if (mode !== 'student' && mode !== 'question') {
+          return;
+        }
+        if (mode === reviewState.sortMode) {
+          return;
+        }
+        cancelEditEvaluation();
+        reviewState.sortMode = mode;
+        syncReviewSortButtons();
+        applyReviewSort();
+        renderCurrentReview();
+      }
+
       function openReviewForQuiz(quiz) {
         clearPanelMessage('reviewDetailMessage');
         reviewState.quiz = quiz;
         reviewState.currentIndex = 0;
+        reviewState.sortMode = 'student';
         reviewState.editing = false;
         reviewState.imageCache = {};
         showProcessing('Loading evaluations...');
 
         google.script.run
           .withSuccessHandler(function(items) {
-            reviewState.items = items;
+            reviewState.rawItems = items;
+            applyReviewSort(null);
             showReviewSubview('detail');
             renderCurrentReview();
             hideProcessing();
@@ -1033,8 +1234,14 @@
         document.getElementById('reviewPositionMeta').textContent =
           'Evaluation ' + (reviewState.currentIndex + 1) + ' of ' + total +
           (item.questionId ? ' · Question ID: ' + item.questionId : '');
-        document.getElementById('reviewCurrentBanner').textContent =
-          'Now viewing: ' + item.studentName + ' · Question ' + item.questionNumber + ' of quiz';
+        if (reviewState.sortMode === 'question') {
+          document.getElementById('reviewCurrentBanner').textContent =
+            'Now viewing: Question ' + item.questionNumber + ' · ' + item.studentName;
+        } else {
+          document.getElementById('reviewCurrentBanner').textContent =
+            'Now viewing: ' + item.studentName + ' · Question ' + item.questionNumber + ' of quiz';
+        }
+        syncReviewSortButtons();
 
         var questionText = item.qPrompt || item.questionText || '';
         document.getElementById('reviewQuestion').textContent = questionText || '(Question text not found for this evaluation)';

@@ -48,18 +48,27 @@ Nav order: **Add Question** | **Evaluate** | **Review**
   - After run: `finishEvaluationUi` logs via `logTeacherEvaluateEvent` → `logFromClient`; shows `#evaluateMessage` summary; **Done** overlay until user clicks OK; then `loadEvaluateView(true)` refreshes cards
   - Hybrid timing on fresh run: server `estimatedSec` + client-measured wait time (`clientStartedAt` → success handler)
 - **Review** → `getQuizReviewList()`, `getEvaluationsForQuiz(quizId)`; lazy images via `getQuestionImage` + `reviewState.imageCache`
+  - **Sort** (client-side only): **Student** (default) or **Question** — `data-review-sort` toggles; `setReviewSortMode` / `applyReviewSort` / `sortReviewItems`; preserves current evaluation by sheet `row` when switching
+  - **Student:** name A→Z, then question number; **Question:** question number, then name A→Z
+  - Server `getEvaluationsForQuiz` also sorts student-first; client re-sorts from `rawItems` on load and on toggle
 
 Review detail layout (top to bottom):
 
-1. Header: quiz title, meta, **`#reviewCurrentBanner`** ("Now viewing: {student} · Question {n}")
+1. Header: quiz title (`#reviewQuizTitle`), meta (`#reviewPositionMeta`), **Sort by** toggles (`.review-sort-row`, `data-review-sort="student|question"`), **`#reviewCurrentBanner`**
+   - Student sort: `Now viewing: {student} · Question {n} of quiz`
+   - Question sort: `Now viewing: Question {n} · {student}`
 2. **Top nav:** Back to Quizzes · Previous · Next (`data-review-nav="prev|next"`)
-3. Question (readonly) + optional image (`#reviewQuestionImage`)
-4. Student Answer (readonly)
-5. Evaluation (textarea; editable in edit mode)
-6. Rubric (readonly)
-7. **Bottom nav:** Back · Previous · Next · Edit Evaluation · Submit Changes
-8. **Footer:** `#reviewFooterStudent`, `#reviewFooterQuestion`
-9. `syncReviewNavButtons(isFirst, isLast, editing)` keeps top/bottom nav in sync
+3. **2×2 grid** (`.review-grid`) — goal is full review visible without page scroll on typical content:
+   - Row 1: **Question** (`#reviewQuestion` + optional `#reviewQuestionImage`) | **Student Response** (`#reviewAnswer`)
+   - Row 2: **Rubric** (`#reviewRubric`) | **AI Evaluation** (`#reviewEvaluation` textarea; editable in edit mode)
+   - Each cell: `.content-block` → `.content-label` + `.review-grid-scroll` → `.content-field`
+   - Cells use `aspect-ratio: 2 / 1`; container widens to **1040px** while `#review-detail.active` (`.container:has(#review-detail.active)`)
+   - Long text scrolls inside `.review-grid-scroll`, not the whole page; do not revert to a tall single-column stack without explicit request
+4. **Bottom nav:** Back · Previous · Next · Edit Evaluation · Submit Changes
+5. **Footer:** `#reviewFooterStudent`, `#reviewFooterQuestion`
+6. `syncReviewNavButtons(isFirst, isLast, editing)` keeps top/bottom nav in sync
+
+`reviewState`: `{ quiz, rawItems, items, sortMode, currentIndex, editing, originalEvaluation, imageCache }` — `sortMode` resets to `'student'` when opening a quiz.
 
 Use `textContent` for readonly blocks; `item.qPrompt || item.questionText` for question text.
 
