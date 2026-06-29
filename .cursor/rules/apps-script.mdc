@@ -65,8 +65,8 @@ Key helpers:
 - `addQuestionAndRubric({ quizName, question, rubric, imageData })` — single call; optional `imageData` (full data URL) saved to Questions G via `prepareQuestionImageData_`
 - `getQuizEvaluationList()` — all quizzes + `pendingCount` + `lastEvaluation` (serialized; primitives only)
 - `triggerEvaluation(quizId)` — question-first batch grading; omit `quizId` to grade all (menu); returns result object with `evalRunId`, `estimatedSec`, `actualSec`, etc.
-- `getQuizReviewList()` — quizzes + evaluated counts
-- `getEvaluationsForQuiz(quizId)` — returns `hasImage` (not `imageData`); lazy image load on client; server sorts student-first (client re-sorts in `teacher.html` Review UI)
+- `getQuizReviewList()` — quizzes + `evaluatedCount` + `commentedCount`
+- `getEvaluationsForQuiz(quizId)` — returns `hasImage`, `studentReviewText` (not `imageData`); lazy image load on client; server sorts student-first (client re-filters/re-sorts in `teacher.html` Review UI)
 - `updateEvaluation(row, evaluationText)` — teacher edit of column E
 - `seedHistogramPilotQuiz()` / `seedHistogramPilotQuizWithAlert()` — 2-question pilot + 5 student responses
 - `seedExtendedHistogramPilotQuiz()` / `seedExtendedHistogramPilotQuizWithAlert()` — 8-question pilot + 16 students (128 responses)
@@ -78,6 +78,9 @@ Key helpers:
 - `getQuestionsForQuiz(quizId)` — `{ questionId, questionText, hasImage, number }` (no image payload)
 - `getQuestionImage(quizId, questionId)` — lazy image load
 - `submitQuiz(studentName, quizId, answers)` — batch `setValues` on Responses
+- `getStudentReviewQuizList(studentName)` — quizzes with AI evaluations for that student
+- `getStudentEvaluationsForQuiz(studentName, quizId)` — one student's evaluated items (wraps `getEvaluationsForQuiz` + filter)
+- `updateStudentReview(row, studentName, reviewText)` — student edit of Evaluations column H; validates name matches row
 
 **Menu**
 
@@ -100,7 +103,7 @@ Legacy upload API (`beginQuestionImageUpload`, `uploadQuestionImagePart`, `uploa
 - `ensureQuestionsHeaders_` — through column G
 - `ensureQuestionImagesSheet_` — QuestionImages tab (legacy)
 - `ensureResponsesHeaders_` — through column F
-- `ensureEvaluationsHeaders_` — through column G
+- `ensureEvaluationsHeaders_` — through column **H** (adds **Student Review** in H if missing)
 - `ensureLogsSheet_` — Logs tab
 
 ## API key
@@ -123,13 +126,15 @@ sheet.getRange('A' + startRow + ':F' + endRow).setValues(rows);
 ```
 
 - Questions `A2:G` indices: `[1]` question, `[2]` rubric, `[4]` quiz ID, `[5]` question ID, `[6]` image
-- Evaluations `A2:G` indices: `[4]` AI feedback, `[5]` question ID, `[6]` quiz ID
+- Evaluations `A2:H` indices: `[4]` AI feedback, `[5]` question ID, `[6]` quiz ID, `[7]` student review
 - Call `ensureResponsesHeaders_` before reading/writing Responses
+- Call `ensureEvaluationsHeaders_` before reading/writing Evaluations (including column H)
 - Wrap `UrlFetchApp.fetch` + `JSON.parse` in try/catch; use `muteHttpExceptions: true`
 - Pass structured payloads as **one object** to `google.script.run` (including `imageData`)
 - **Do not** load full image maps in `getQuestionsForQuiz` or `getEvaluationsForQuiz` — use `hasImage` + lazy `getQuestionImage`
 - **Do not** return `Date` objects (or other non-JSON types) from functions called via `google.script.run` — use `serializeQuizEvaluationListForClient_`; symptom: server logs show data but client receives empty list
 - **Do not** split teacher Evaluate into multiple `google.script.run` calls per Anthropic batch unless a proven client timeout requires it — keep one `triggerEvaluation` call; batching savings are Anthropic-side only
+- `clasp push` updates editor code only; web app HTML requires deployment **New version** — verify with `#buildLabel` on live pages
 
 ## OAuth scopes (appsscript.json)
 

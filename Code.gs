@@ -248,12 +248,12 @@ function setupResponsesSheet_(sheet) {
 }
 
 function setupEvaluationsSheet_(sheet) {
-  sheet.getRange('A1:G1').setValues([
-    ['Timestamp', 'Student Name', 'Answer', 'Rubric', 'AI Evaluation', 'Question ID', 'Quiz ID']
+  sheet.getRange('A1:H1').setValues([
+    ['Timestamp', 'Student Name', 'Answer', 'Rubric', 'AI Evaluation', 'Question ID', 'Quiz ID', 'Student Review']
   ]);
-  setColumnWidths_(sheet, [160, 160, 300, 300, 400, 100, 100]);
+  setColumnWidths_(sheet, [160, 160, 300, 300, 400, 100, 100, 320]);
   sheet.setFrozenRows(1);
-  formatHeaderRow_(sheet, 1, 7);
+  formatHeaderRow_(sheet, 1, 8);
 }
 
 function ensureEvaluationsHeaders_(sheet) {
@@ -264,7 +264,10 @@ function ensureEvaluationsHeaders_(sheet) {
     if (sheet.getRange('G1').getValue() !== 'Quiz ID') {
       sheet.getRange('G1').setValue('Quiz ID');
     }
-    formatHeaderRow_(sheet, 1, 7);
+    if (sheet.getRange('H1').getValue() !== 'Student Review') {
+      sheet.getRange('H1').setValue('Student Review');
+    }
+    formatHeaderRow_(sheet, 1, 8);
     return;
   }
   setupEvaluationsSheet_(sheet);
@@ -1538,11 +1541,12 @@ function getQuizReviewList() {
   var ss = getQuizSpreadsheet_();
   var evalSheet = ss.getSheetByName('Evaluations');
   var evaluatedByQuiz = {};
+  var commentedByQuiz = {};
 
   if (evalSheet && evalSheet.getLastRow() >= 2) {
     ensureEvaluationsHeaders_(evalSheet);
     var lastRow = evalSheet.getLastRow();
-    var rows = evalSheet.getRange('A2:G' + lastRow).getValues();
+    var rows = evalSheet.getRange('A2:H' + lastRow).getValues();
 
     for (var i = 0; i < rows.length; i++) {
       var evaluation = String(rows[i][4] || '').trim();
@@ -1551,14 +1555,124 @@ function getQuizReviewList() {
         continue;
       }
       evaluatedByQuiz[rowQuizId] = (evaluatedByQuiz[rowQuizId] || 0) + 1;
+      if (cellText_(rows[i][7]).trim()) {
+        commentedByQuiz[rowQuizId] = (commentedByQuiz[rowQuizId] || 0) + 1;
+      }
     }
   }
 
   for (var j = 0; j < list.length; j++) {
     list[j].evaluatedCount = evaluatedByQuiz[list[j].quizId] || 0;
+    list[j].commentedCount = commentedByQuiz[list[j].quizId] || 0;
   }
 
   return list;
+}
+
+function getStudentReviewQuizList(studentName) {
+  studentName = String(studentName).trim();
+  if (!studentName) {
+    throw new Error('Student name is required.');
+  }
+
+  var list = getQuizList();
+  var ss = getQuizSpreadsheet_();
+  var evalSheet = ss.getSheetByName('Evaluations');
+  var reviewedByQuiz = {};
+
+  if (evalSheet && evalSheet.getLastRow() >= 2) {
+    ensureEvaluationsHeaders_(evalSheet);
+    var lastRow = evalSheet.getLastRow();
+    var rows = evalSheet.getRange('A2:H' + lastRow).getValues();
+
+    for (var i = 0; i < rows.length; i++) {
+      var rowStudent = cellText_(rows[i][1]).trim();
+      var evaluation = cellText_(rows[i][4]).trim();
+      var rowQuizId = normalizeSheetId_(rows[i][6]);
+      if (!rowQuizId || !evaluation || rowStudent !== studentName) {
+        continue;
+      }
+      reviewedByQuiz[rowQuizId] = (reviewedByQuiz[rowQuizId] || 0) + 1;
+    }
+  }
+
+  var result = [];
+  for (var j = 0; j < list.length; j++) {
+    var count = reviewedByQuiz[list[j].quizId] || 0;
+    if (!count) {
+      continue;
+    }
+    result.push({
+      quizId: list[j].quizId,
+      quizName: list[j].quizName,
+      questionCount: list[j].questionCount,
+      evaluatedCount: count
+    });
+  }
+
+  return result;
+}
+
+function getStudentEvaluationsForQuiz(studentName, quizId) {
+  studentName = String(studentName).trim();
+  quizId = normalizeSheetId_(quizId);
+  if (!studentName) {
+    throw new Error('Student name is required.');
+  }
+  if (!quizId) {
+    throw new Error('Quiz ID is required.');
+  }
+
+  var items = getEvaluationsForQuiz(quizId);
+  var filtered = [];
+  for (var i = 0; i < items.length; i++) {
+    if (String(items[i].studentName).trim() === studentName) {
+      filtered.push(items[i]);
+    }
+  }
+
+  if (!filtered.length) {
+    throw new Error('No evaluated results found for you on this quiz yet.');
+  }
+
+  filtered.sort(function(a, b) {
+    return a.questionNumber - b.questionNumber;
+  });
+
+  return filtered;
+}
+
+function updateStudentReview(row, studentName, reviewText) {
+  row = Number(row);
+  studentName = String(studentName).trim();
+  reviewText = String(reviewText || '').trim();
+
+  if (!row || row < 2) {
+    throw new Error('Invalid evaluation row.');
+  }
+  if (!studentName) {
+    throw new Error('Student name is required.');
+  }
+
+  var ss = getQuizSpreadsheet_();
+  var evalSheet = ss.getSheetByName('Evaluations');
+  if (!evalSheet) {
+    throw new Error('Evaluations sheet not found.');
+  }
+
+  ensureEvaluationsHeaders_(evalSheet);
+  if (row > evalSheet.getLastRow()) {
+    throw new Error('Evaluation row not found.');
+  }
+
+  var rowStudent = cellText_(evalSheet.getRange('B' + row).getValue()).trim();
+  if (rowStudent !== studentName) {
+    throw new Error('You can only update your own review comments.');
+  }
+
+  evalSheet.getRange('H' + row).setValue(reviewText);
+  SpreadsheetApp.flush();
+  return 'Your comment was saved.';
 }
 
 function getEvaluationsForQuiz(quizId) {
@@ -1588,7 +1702,7 @@ function getEvaluationsForQuiz(quizId) {
   }
 
   var lastRow = evalSheet.getLastRow();
-  var rows = evalSheet.getRange('A2:G' + lastRow).getValues();
+  var rows = evalSheet.getRange('A2:H' + lastRow).getValues();
   var responseRows = [];
   if (responsesSheet && responsesSheet.getLastRow() >= 2) {
     ensureResponsesHeaders_(responsesSheet);
@@ -1647,6 +1761,7 @@ function getEvaluationsForQuiz(quizId) {
       answerText: cellText_(rows[i][2]),
       rubricText: cellText_(rows[i][3]) || (details ? details.rubricText : ''),
       evaluationText: evaluation,
+      studentReviewText: cellText_(rows[i][7]),
       questionId: questionId,
       quizId: rowQuizId,
       qPrompt: details ? details.questionText : '',

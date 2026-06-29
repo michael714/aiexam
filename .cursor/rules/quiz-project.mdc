@@ -5,16 +5,16 @@ alwaysApply: true
 
 # Quiz Prototype Project
 
-Container-bound Google Apps Script + clasp project for a teacher/student multi-question quiz with Anthropic-powered batch grading and optional per-question images (PNG/GIF).
+Container-bound Google Apps Script + clasp project for a teacher/student multi-question quiz with Anthropic-powered batch grading, optional per-question images (PNG/GIF), student post-evaluation review, and teacher review with student-comment filtering.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `Code.gs` | Server logic: routing, quiz CRUD, images, student submit, AI evaluation, review, logging, pilot seeds |
+| `Code.gs` | Server logic: routing, quiz CRUD, images, student submit, AI evaluation, student/teacher review, logging, pilot seeds |
 | `teacher.html` | Teacher dashboard — **Add Question**, **Evaluate**, **Review** (`?teach`) |
 | `add-question.html` | Spreadsheet modal for **Quiz → Add Question and Rubric** |
-| `student.html` | Quiz picker, one-question-at-a-time UI, submit full quiz |
+| `student.html` | Take quiz + **Review Results** (default `doGet`) |
 | `appsscript.json` | V8 runtime, OAuth scopes, web app config |
 | `.clasp.json` | Script/spreadsheet IDs for `clasp push` |
 | `setup.sh` | Push code + attempt remote `setupSheet` |
@@ -24,7 +24,7 @@ Container-bound Google Apps Script + clasp project for a teacher/student multi-q
 - **Questions** — A = row, B = question, C = rubric, D = quiz name, E = quiz ID, F = question ID, G = image (`data:image/...;base64,...` for new saves; legacy `PARTS:n` still supported)
 - **QuestionImages** — legacy chunked storage (A = question ID, B = quiz ID, C = part, D = chunk); still read for old `PARTS:n` rows
 - **Responses** — A = timestamp, B = name, C = answer, D = status, E = question ID, F = quiz ID (one row per answer)
-- **Evaluations** — A = timestamp, B = name, C = answer, D = rubric, E = AI feedback, F = question ID, G = quiz ID
+- **Evaluations** — A = timestamp, B = name, C = answer, D = rubric, E = AI feedback, F = question ID, G = quiz ID, **H = Student Review** (student question/comment after AI evaluation)
 - **Logs** — A = timestamp, B = level, C = source, D = message, E = details (JSON)
 
 Questions in the same quiz share **quiz name** (D) and **quiz ID** (E). Each question row has its own **question ID** (F). IDs are random 8-character strings (no ambiguous chars).
@@ -36,7 +36,7 @@ Questions in the same quiz share **quiz name** (D) and **quiz ID** (E). Each que
 - **Do not reintroduce transport chunking** unless a proven payload limit is hit; chunking multiplies round trips (~15 s vs ~5 s for typical images).
 - **Legacy read path:** `PARTS:n` in G + **QuestionImages** tab still loads via `readQuestionImageDataForQuestion_`.
 - **Student:** `getQuestionsForQuiz` returns `hasImage` only (uses `questionHasImageMarker_`); image loaded lazily via `getQuestionImage` + client `imageCache`.
-- **Review:** `getEvaluationsForQuiz` returns `hasImage` (not full `imageData`); lazy load via `getQuestionImage` + `reviewState.imageCache`.
+- **Review (teacher + student):** `getEvaluationsForQuiz` returns `hasImage` (not `imageData`); lazy load via `getQuestionImage` + `imageCache`.
 
 ## IDs and linking
 
@@ -44,11 +44,19 @@ Questions in the same quiz share **quiz name** (D) and **quiz ID** (E). Each que
 - Link by **question ID** (+ **quiz ID** when the same question could appear in multiple quizzes).
 - `ensureQuestionIds_(questionsSheet)` batch-backfills empty F column.
 
+## End-to-end workflow
+
+1. Teacher creates quiz (questions + rubrics).
+2. Students take quiz → Responses (**Pending**).
+3. Teacher runs **Evaluate** → AI writes Evaluations column E; Responses → **Complete**.
+4. Students open **Review Results** → read AI feedback; optional question/comment saved to Evaluations column H.
+5. Teacher opens **Review** → browse all evaluations or **Student Comments Only** to focus on flagged items.
+
 ## Teacher workflow
 
 1. **Add Question** — quiz name, question, rubric, optional image; reusing quiz name reuses quiz ID.
 2. **Evaluate** — lists **all quizzes** from Questions (not only those with Pending responses). **Evaluate** is disabled when `pendingCount === 0`. Each card shows **last evaluation timing** from Logs (estimated + server actual; client wait when logged). Run grading via `triggerEvaluation(quizId)` (single server call, question-first batching).
-3. **Review** — pick a quiz; browse evaluations in a **2×2 grid** (Question | Student Response, Rubric | AI Evaluation) designed to fit above the fold without page scroll. **Sort by Student** (default) or **Question** (client-side; mirrors question-first AI grading). **Previous/Next** at top and bottom; footer shows current student + question; **Edit Evaluation** → `updateEvaluation`.
+3. **Review** — pick a quiz; browse evaluations in a **2×2 grid** (Question | Student Response, Rubric | AI Evaluation) plus a full-width **Student Question or Comment** row below. **Show:** **All Questions** (default) or **Student Comments Only** (client-side filter on `studentReviewText`; disabled when `commentedCount === 0`). **Sort by Student** (default) or **Question** (client-side). Quiz list cards show `evaluatedCount` and `commentedCount`. **Edit Evaluation** → `updateEvaluation`.
 
 Spreadsheet menu: **Quiz → Run AI Evaluation**, **Seed Histogram Pilot Quiz**, **Seed Extended Pilot Quiz**, **Clear all quiz data...**, **Open Logs**, **Authorize API access**, **Set up sheets**.
 
@@ -57,9 +65,8 @@ Spreadsheet menu: **Quiz → Run AI Evaluation**, **Seed Histogram Pilot Quiz**,
 ## Student workflow
 
 1. Open deployment URL (no query string).
-2. Enter name, pick a quiz — **one server call** loads all question text/metadata (not images).
-3. Answer one question at a time (Previous / Next); images load per question on demand.
-4. **Submit Quiz** — batch write to Responses, Status **Pending**.
+2. **Take a Quiz** (default mode): enter name, pick quiz — **one server call** loads all question text/metadata (not images). Answer one question at a time; **Submit Quiz** → Responses, Status **Pending**.
+3. **Review Results**: enter name → `getStudentReviewQuizList` shows quizzes with AI evaluations for that student → browse question-by-question (2×2 grid + editable comment row). Comments saved via `updateStudentReview` to Evaluations column H. Auto-save on Previous/Next; **Save Comment** for explicit save.
 
 ## URLs
 
@@ -69,10 +76,12 @@ Spreadsheet menu: **Quiz → Run AI Evaluation**, **Seed Histogram Pilot Quiz**,
 ## Deployment checklist
 
 1. `clasp push --force` after code changes
-2. **Deploy → Manage deployments** → pencil → **New version** → Deploy (same URL) — required for **teacher.html** / **student.html** changes; spreadsheet menu picks up `Code.gs` after refresh
+2. **Deploy → Manage deployments** → pencil (edit **existing** deployment) → **New version** → **Deploy** (same URL) — required for **teacher.html** / **student.html** changes; spreadsheet menu picks up `Code.gs` after refresh
 3. `ANTHROPIC_API_KEY` in Script Properties (not in source code)
 4. Run **Quiz → Authorize API access** once for `UrlFetchApp`
 5. Web app: Execute as **Me**, access **Anyone**
+
+**Verify HTML deploy:** both `student.html` and `teacher.html` show `#buildLabel` at bottom of the card (e.g. `build: 20260629-review-comments`). **Bump the build string** in both files whenever shipping UI changes; tell the user what to look for. Do **not** rely on the left-hand deployment description in Manage deployments — that is the deployment label, not the version note, and may not change when a new version is created.
 
 Anthropic API calls run on **Google's servers**, not the school network.
 

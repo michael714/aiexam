@@ -21,17 +21,25 @@ alwaysApply: false
 - Success message: `#e6f4ea` / `#137333`; error: `#fce8e6` / `#c5221f`
 - Font stack: `-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif`
 
+## Build label (deployment verification)
+
+Both `student.html` and `teacher.html` include at the bottom of `.container`:
+
+- `#buildLabel.build-label` — small gray text, right-aligned (e.g. `build: 20260629-review-comments`)
+- **Bump both files together** when shipping HTML UI changes; use `YYYYMMDD-` prefix with year **2026+** and a short feature slug
+- After `clasp push`, user must **Manage deployments → pencil → New version → Deploy**; confirm live page shows the new build string (more reliable than the deployment description in the GAS UI)
+
 ## Processing overlay (all pages)
 
 Modal overlay during async work:
 
-- `#processingOverlay`, `#processingSpinner`, `#processingMessage`, `#processingDismissBtn` (OK)
+- `#processingOverlay`, `#processingSpinner`, `#processingMessage`, `#processingDismissBtn` (OK on teacher only)
 - `showProcessing(message)` — spinner + message; hides OK button
 - `showDone(message, onDismiss)` — checkmark + message + **OK** button; **no auto-dismiss**; optional callback on OK (used after evaluation to reload list)
 - `dismissProcessing()` — hides overlay; runs `onDismiss` callback if set
 - `hideProcessing()` — immediate dismiss (errors); clears callback
 
-Use on: quiz load, submit, save question, evaluate, review load, save evaluation edit.
+Use on: quiz load, submit, save question, evaluate, review load, save evaluation edit, save student comment.
 
 ## Pages
 
@@ -48,27 +56,27 @@ Nav order: **Add Question** | **Evaluate** | **Review**
   - After run: `finishEvaluationUi` logs via `logTeacherEvaluateEvent` → `logFromClient`; shows `#evaluateMessage` summary; **Done** overlay until user clicks OK; then `loadEvaluateView(true)` refreshes cards
   - Hybrid timing on fresh run: server `estimatedSec` + client-measured wait time (`clientStartedAt` → success handler)
 - **Review** → `getQuizReviewList()`, `getEvaluationsForQuiz(quizId)`; lazy images via `getQuestionImage` + `reviewState.imageCache`
-  - **Sort** (client-side only): **Student** (default) or **Question** — `data-review-sort` toggles; `setReviewSortMode` / `applyReviewSort` / `sortReviewItems`; preserves current evaluation by sheet `row` when switching
-  - **Student:** name A→Z, then question number; **Question:** question number, then name A→Z
-  - Server `getEvaluationsForQuiz` also sorts student-first; client re-sorts from `rawItems` on load and on toggle
+  - Quiz cards: `evaluatedCount`, optional `commentedCount` in meta
+  - **Show** (client-side filter): **All Questions** (default) or **Student Comments Only** — `data-review-filter` toggles; `setReviewFilterMode` / `filterReviewItems` / `applyReviewView`; comments button disabled when no comments
+  - **Sort** (client-side): **Student** (default) or **Question** — `data-review-sort` toggles; `setReviewSortMode` / `applyReviewView` / `sortReviewItems`; preserves current evaluation by sheet `row` when switching
+  - Filter then sort: `applyReviewView` replaces old `applyReviewSort`
+  - Empty filter state: `#reviewEmptyState` when **Student Comments Only** has no matches
 
 Review detail layout (top to bottom):
 
-1. Header: quiz title (`#reviewQuizTitle`), meta (`#reviewPositionMeta`), **Sort by** toggles (`.review-sort-row`, `data-review-sort="student|question"`), **`#reviewCurrentBanner`**
-   - Student sort: `Now viewing: {student} · Question {n} of quiz`
-   - Question sort: `Now viewing: Question {n} · {student}`
+1. Header: quiz title (`#reviewQuizTitle`), meta (`#reviewPositionMeta`), **Show** toggles, **Sort by** toggles, **`#reviewCurrentBanner`**
 2. **Top nav:** Back to Quizzes · Previous · Next (`data-review-nav="prev|next"`)
-3. **2×2 grid** (`.review-grid`) — goal is full review visible without page scroll on typical content:
+3. **2×2 grid** (`#reviewGrid`, `.review-grid`) — goal is full review visible without page scroll on typical content:
    - Row 1: **Question** (`#reviewQuestion` + optional `#reviewQuestionImage`) | **Student Response** (`#reviewAnswer`)
    - Row 2: **Rubric** (`#reviewRubric`) | **AI Evaluation** (`#reviewEvaluation` textarea; editable in edit mode)
    - Each cell: `.content-block` → `.content-label` + `.review-grid-scroll` → `.content-field`
    - Cells use `aspect-ratio: 2 / 1`; container widens to **1040px** while `#review-detail.active` (`.container:has(#review-detail.active)`)
-   - Long text scrolls inside `.review-grid-scroll`, not the whole page; do not revert to a tall single-column stack without explicit request
-4. **Bottom nav:** Back · Previous · Next · Edit Evaluation · Submit Changes
-5. **Footer:** `#reviewFooterStudent`, `#reviewFooterQuestion`
-6. `syncReviewNavButtons(isFirst, isLast, editing)` keeps top/bottom nav in sync
+4. **Student comment row** (`#reviewCommentRow`): readonly `#reviewStudentComment` (`.comment-field`; `.empty-comment` when blank)
+5. **Bottom nav:** Back · Previous · Next · Edit Evaluation · Submit Changes
+6. **Footer:** `#reviewFooterStudent`, `#reviewFooterQuestion`
+7. `syncReviewNavButtons(isFirst, isLast, editing)` keeps top/bottom nav in sync
 
-`reviewState`: `{ quiz, rawItems, items, sortMode, currentIndex, editing, originalEvaluation, imageCache }` — `sortMode` resets to `'student'` when opening a quiz.
+`reviewState`: `{ quiz, rawItems, items, filterMode, sortMode, currentIndex, editing, originalEvaluation, imageCache }` — `filterMode` and `sortMode` reset to `'all'` / `'student'` when opening a quiz.
 
 Use `textContent` for readonly blocks; `item.qPrompt || item.questionText` for question text.
 
@@ -78,17 +86,30 @@ Same add form as teacher **Add Question** tab; single-call save with optional `i
 
 ### `student.html` (default `doGet`)
 
-1. Quiz list → `getQuizList()`
-2. Pick quiz → `getQuestionsForQuiz(quizId)` loads **all question text** in one call (not images)
-3. One question at a time in UI; **Submit Quiz** → `submitQuiz(...)`
+Home screen modes (`data-student-mode`, `setStudentMode`):
 
-Per-question display:
+- **Take a Quiz** (default) → `getQuizList()`, `getQuestionsForQuiz`, `submitQuiz`
+- **Review Results** → `getStudentReviewQuizList(name)`, then `getStudentEvaluationsForQuiz(name, quizId)`
+
+Take-quiz flow:
+
+1. Enter name, pick quiz — **one server call** loads all question text (not images)
+2. One question at a time; **Submit Quiz** → `submitQuiz(...)`
+
+Student review detail (`#view-student-review`):
+
+- Same **2×2 grid** as teacher (Question | Your Answer, Rubric | AI Evaluation); container widens to **1040px** while active
+- Full-width **Your Question or Comment** (`#studentReviewComment`) below grid; save via `updateStudentReview`
+- Auto-save on Previous/Next; **Save Comment** button
+- `studentReviewState`: `{ quizId, quizName, items, currentIndex, imageCache, originalReview, saving }`
+
+Per-question display (take mode):
 
 - `#questionNumber` — "Question 1 of 3"
 - `#studentQuestionText` in `.question-field`
 - `#questionImageBlock` / `#questionImage` — lazy via `getQuestionImage` + `imageCache`
 
-State: `{ studentName, quizId, quizName, questions, currentIndex, answers, imageCache }`
+State (take mode): `{ studentName, quizId, quizName, questions, currentIndex, answers, imageCache, selectMode }`
 
 Do not use `id="questionText"` on student page.
 
@@ -98,9 +119,15 @@ Do not use `id="questionText"` on student page.
 
 **Student `getQuestionImage`:** `imageData`, `hasImage`, `quizId`, `questionId`
 
+**Student `getStudentReviewQuizList`:** `quizId`, `quizName`, `questionCount`, `evaluatedCount`
+
+**Student `getStudentEvaluationsForQuiz`:** same item shape as teacher review, filtered to one student, sorted by question number
+
 **Evaluate `getQuizEvaluationList`:** `quizId`, `quizName`, `questionCount`, `pendingCount`, `lastEvaluation` (`evalRunId`, `estimatedSec`, `actualSec`, `clientWaitSec`, `deltaSec`, `completedAt` as ISO string)
 
-**Review `getEvaluationsForQuiz`:** `questionText`, `qPrompt`, `answerText`, `rubricText`, `evaluationText`, `hasImage`, `questionNumber`, `studentName` (via item fields)
+**Review `getQuizReviewList`:** `quizId`, `quizName`, `questionCount`, `evaluatedCount`, `commentedCount`
+
+**Review `getEvaluationsForQuiz`:** `row`, `questionText`, `qPrompt`, `answerText`, `rubricText`, `evaluationText`, `studentReviewText`, `hasImage`, `questionNumber`, `studentName`, `questionId`, `quizId`
 
 ## Image client limits
 
