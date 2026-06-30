@@ -24,7 +24,8 @@ Container-bound Google Apps Script + clasp project for a teacher/student multi-q
 - **Questions** — A = row, B = question, C = rubric, D = quiz name, E = quiz ID, F = question ID, G = image (`data:image/...;base64,...` for new saves; legacy `PARTS:n` still supported)
 - **QuestionImages** — legacy chunked storage (A = question ID, B = quiz ID, C = part, D = chunk); still read for old `PARTS:n` rows
 - **Responses** — A = timestamp, B = name, C = answer, D = status, E = question ID, F = quiz ID (one row per answer)
-- **Evaluations** — A = timestamp, B = name, C = answer, D = rubric, E = AI feedback, F = question ID, G = quiz ID, **H = Student Review** (student question/comment after AI evaluation)
+- **Evaluations** — A = timestamp, B = name, C = answer, D = rubric, E = **Evaluation** (current text; AI-generated initially, teacher-editable), F = question ID, G = quiz ID, **H = Student Review** (student question/comment after reading evaluation)
+- **EvaluationHistory** — append-only log of every evaluation version (no web UI): A = timestamp, B = source (`AI` / `Teacher`), C = student name, D = question ID, E = quiz ID, F = Evaluations row, G = evaluation text
 - **Logs** — A = timestamp, B = level, C = source, D = message, E = details (JSON)
 
 Questions in the same quiz share **quiz name** (D) and **quiz ID** (E). Each question row has its own **question ID** (F). IDs are random 8-character strings (no ambiguous chars).
@@ -48,25 +49,25 @@ Questions in the same quiz share **quiz name** (D) and **quiz ID** (E). Each que
 
 1. Teacher creates quiz (questions + rubrics).
 2. Students take quiz → Responses (**Pending**).
-3. Teacher runs **Evaluate** → AI writes Evaluations column E; Responses → **Complete**.
-4. Students open **Review Results** → read AI feedback; optional question/comment saved to Evaluations column H.
-5. Teacher opens **Review** → browse all evaluations or **Student Comments Only** to focus on flagged items.
+3. Teacher runs **Evaluate** → AI writes Evaluations column E and appends **EvaluationHistory** (`AI`); Responses → **Complete**.
+4. Students open **Review Results** → read current evaluation; optional question/comment saved to Evaluations column H.
+5. Teacher opens **Review** → browse all evaluations or **Student Comments Only** to focus on flagged items. **Edit Evaluation** updates column E and appends **EvaluationHistory** (`Teacher`) when text changes.
 
 ## Teacher workflow
 
 1. **Add Question** — quiz name, question, rubric, optional image; reusing quiz name reuses quiz ID.
 2. **Evaluate** — lists **all quizzes** from Questions (not only those with Pending responses). **Evaluate** is disabled when `pendingCount === 0`. Each card shows **last evaluation timing** from Logs (estimated + server actual; client wait when logged). Run grading via `triggerEvaluation(quizId)` (single server call, question-first batching).
-3. **Review** — pick a quiz; browse evaluations in a **2×2 grid** (Question | Student Response, Rubric | AI Evaluation) plus a full-width **Student Question or Comment** row below. **Show:** **All Questions** (default) or **Student Comments Only** (client-side filter on `studentReviewText`; disabled when `commentedCount === 0`). **Sort by Student** (default) or **Question** (client-side). Quiz list cards show `evaluatedCount` and `commentedCount`. **Edit Evaluation** → `updateEvaluation`.
+3. **Review** — pick a quiz; browse evaluations in a **2×2 grid** (Question | Student Response, Rubric | **Evaluation**) plus a full-width **Student Question or Comment** row below. **Show:** **All Questions** (default) or **Student Comments Only** (client-side filter on `studentReviewText`; disabled when `commentedCount === 0`). **Sort by Student** (default) or **Question** (client-side). Quiz list cards show `evaluatedCount` and `commentedCount`. **Edit Evaluation** → `updateEvaluation` (appends **EvaluationHistory** when text changes).
 
 Spreadsheet menu: **Quiz → Run AI Evaluation**, **Seed Histogram Pilot Quiz**, **Seed Extended Pilot Quiz**, **Clear all quiz data...**, **Open Logs**, **Authorize API access**, **Set up sheets**.
 
-**Clear all quiz data** deletes all data rows in Questions, Responses, and Evaluations (headers kept). Logs are not cleared. Use before re-seeding pilots.
+**Clear all quiz data** deletes all data rows in Questions, Responses, Evaluations, and **EvaluationHistory** (headers kept). **Logs** are not cleared. Use before re-seeding pilots.
 
 ## Student workflow
 
 1. Open deployment URL (no query string).
 2. **Take a Quiz** (default mode): enter name, pick quiz — **one server call** loads all question text/metadata (not images). Answer one question at a time; **Submit Quiz** → Responses, Status **Pending**.
-3. **Review Results**: enter name → `getStudentReviewQuizList` shows quizzes with AI evaluations for that student → browse question-by-question (2×2 grid + editable comment row). Comments saved via `updateStudentReview` to Evaluations column H. Auto-save on Previous/Next; **Save Comment** for explicit save.
+3. **Review Results**: enter name → `getStudentReviewQuizList` shows quizzes with evaluations for that student → browse question-by-question (2×2 grid + editable comment row). Comments saved via `updateStudentReview` to Evaluations column H. Auto-save on Previous/Next; **Save Comment** for explicit save.
 
 ## URLs
 
@@ -81,7 +82,7 @@ Spreadsheet menu: **Quiz → Run AI Evaluation**, **Seed Histogram Pilot Quiz**,
 4. Run **Quiz → Authorize API access** once for `UrlFetchApp`
 5. Web app: Execute as **Me**, access **Anyone**
 
-**Verify HTML deploy:** both `student.html` and `teacher.html` show `#buildLabel` at bottom of the card (e.g. `build: 20260629-review-comments`). **Bump the build string** in both files whenever shipping UI changes; tell the user what to look for. Do **not** rely on the left-hand deployment description in Manage deployments — that is the deployment label, not the version note, and may not change when a new version is created.
+**Verify HTML deploy:** both `student.html` and `teacher.html` show `#buildLabel` at bottom of the card (e.g. `build: 20260629-eval-history`). **Bump the build string** in both files whenever shipping UI changes; tell the user what to look for. Do **not** rely on the left-hand deployment description in Manage deployments — that is the deployment label, not the version note, and may not change when a new version is created.
 
 Anthropic API calls run on **Google's servers**, not the school network.
 
@@ -100,7 +101,7 @@ Per-question rubrics (Questions column C) should list **requested facts** and **
 - Model: `claude-haiku-4-5-20251001` via `triggerEvaluationByQuestion_(quizId)`.
 - Groups **Pending** responses by question; sends up to **15 student answers per API call** (`EVAL_BATCH_SIZE_`).
 - Model returns JSON array: `[{ id, score, feedback }]` where `id` = Responses row number and `score` is 0–4.
-- Writes Evaluations column E as `Score: X/4\n\n{feedback}`.
+- Writes Evaluations column E as `Score: X/4\n\n{feedback}` and appends each version to **EvaluationHistory** (`AI`).
 - Text-only grading (images not sent to model).
 - Validated pilots:
   - **Histograms Pilot Quiz** — 5 students × 2 questions = 10 answers, **2 API calls** (~13 s)
@@ -116,6 +117,14 @@ Per-question rubrics (Questions column C) should list **requested facts** and **
 - **Teacher Evaluate cards:** `getQuizEvaluationList()` attaches `lastEvaluation` per quiz from latest completed log row (no age cutoff). Returned via `serializeQuizEvaluationListForClient_` (primitives only — **no Date objects**).
 - **Hybrid UI timing:** server **estimate** from `triggerEvaluation` result; **client wait time** measured in browser; completion overlay requires **OK** to dismiss.
 
+## Evaluation history (sheet-only)
+
+- **Evaluations** column E holds only the **current** evaluation (what students and teacher Review display).
+- **EvaluationHistory** is append-only: `writeBatchEvaluationResults_` logs `AI` rows; `updateEvaluation` logs `Teacher` rows only when text changes.
+- Created by **Set up sheets** (`ensureEvaluationHistorySheet_`); no web UI — browse/filter in the spreadsheet tab.
+- Re-running **Evaluate** on the same response appends another `AI` row; prior versions remain in history.
+- Existing evaluations before this feature have no history until re-graded or teacher-edited.
+
 ## UI feedback
 
 All web pages use a **processing overlay** (`showProcessing` / `showDone` / `hideProcessing` / `dismissProcessing`) during async server calls. After evaluation, **Done** shows a checkmark and **OK** button (user must dismiss); quiz list reloads on OK.
@@ -130,5 +139,5 @@ All web pages use a **processing overlay** (`showProcessing` / `showDone` / `hid
 ## Roadmap
 
 - **Statistics content:** histogram pilots seeded; expand question bank as needed.
-- **Future teacher features:** create/copy/archive/delete quiz (not implemented).
+- **Future teacher features:** create/copy/archive/delete quiz (not implemented); optional in-app evaluation history viewer.
 - **Future grading:** optional vision input for questions with images; auto-resume Evaluate after 6-minute GAS timeout.

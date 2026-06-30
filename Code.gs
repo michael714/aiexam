@@ -23,7 +23,7 @@ function clearAllQuizDataWithConfirm() {
   var ui = SpreadsheetApp.getUi();
   var response = ui.alert(
     'Clear all quiz data?',
-    'This deletes every data row in Questions, Responses, and Evaluations. Column headers are kept.\n\n' +
+    'This deletes every data row in Questions, Responses, Evaluations, and EvaluationHistory. Column headers are kept.\n\n' +
       'Logs are not cleared. Use File > Version history on the spreadsheet to restore if needed.',
     ui.ButtonSet.YES_NO
   );
@@ -37,7 +37,8 @@ function clearAllQuizDataWithConfirm() {
       'Quiz data cleared.\n\n' +
       'Questions removed: ' + result.questionsRemoved + '\n' +
       'Responses removed: ' + result.responsesRemoved + '\n' +
-      'Evaluations removed: ' + result.evaluationsRemoved
+      'Evaluations removed: ' + result.evaluationsRemoved + '\n' +
+      'Evaluation history removed: ' + result.evaluationHistoryRemoved
     );
   } catch (error) {
     ui.alert('Could not clear quiz data:\n\n' + error.message);
@@ -49,18 +50,21 @@ function clearAllQuizData_() {
   var questionsRemoved = clearQuizSheetData_(ss, 'Questions', ensureQuestionsHeaders_);
   var responsesRemoved = clearQuizSheetData_(ss, 'Responses', ensureResponsesHeaders_);
   var evaluationsRemoved = clearQuizSheetData_(ss, 'Evaluations', ensureEvaluationsHeaders_);
+  var evaluationHistoryRemoved = clearQuizSheetData_(ss, 'EvaluationHistory', ensureEvaluationHistoryHeaders_);
   SpreadsheetApp.flush();
 
   logQuizEvent_('info', 'clearAllQuizData', 'quiz data cleared', {
     questionsRemoved: questionsRemoved,
     responsesRemoved: responsesRemoved,
-    evaluationsRemoved: evaluationsRemoved
+    evaluationsRemoved: evaluationsRemoved,
+    evaluationHistoryRemoved: evaluationHistoryRemoved
   });
 
   return {
     questionsRemoved: questionsRemoved,
     responsesRemoved: responsesRemoved,
-    evaluationsRemoved: evaluationsRemoved
+    evaluationsRemoved: evaluationsRemoved,
+    evaluationHistoryRemoved: evaluationHistoryRemoved
   };
 }
 
@@ -177,6 +181,7 @@ function setupSheet(spreadsheetId) {
   setupQuestionsSheet_(questionsSheet);
   setupResponsesSheet_(responsesSheet);
   setupEvaluationsSheet_(evaluationsSheet);
+  ensureEvaluationHistorySheet_(ss);
   setupInstructionsSheet_(ss);
   ensureLogsSheet_(ss);
   ensureQuestionImagesSheet_(ss);
@@ -249,7 +254,7 @@ function setupResponsesSheet_(sheet) {
 
 function setupEvaluationsSheet_(sheet) {
   sheet.getRange('A1:H1').setValues([
-    ['Timestamp', 'Student Name', 'Answer', 'Rubric', 'AI Evaluation', 'Question ID', 'Quiz ID', 'Student Review']
+    ['Timestamp', 'Student Name', 'Answer', 'Rubric', 'Evaluation', 'Question ID', 'Quiz ID', 'Student Review']
   ]);
   setColumnWidths_(sheet, [160, 160, 300, 300, 400, 100, 100, 320]);
   sheet.setFrozenRows(1);
@@ -267,10 +272,53 @@ function ensureEvaluationsHeaders_(sheet) {
     if (sheet.getRange('H1').getValue() !== 'Student Review') {
       sheet.getRange('H1').setValue('Student Review');
     }
+    if (sheet.getRange('E1').getValue() === 'AI Evaluation') {
+      sheet.getRange('E1').setValue('Evaluation');
+    }
     formatHeaderRow_(sheet, 1, 8);
     return;
   }
   setupEvaluationsSheet_(sheet);
+}
+
+function setupEvaluationHistorySheet_(sheet) {
+  sheet.getRange('A1:G1').setValues([[
+    'Timestamp',
+    'Source',
+    'Student Name',
+    'Question ID',
+    'Quiz ID',
+    'Evaluations Row',
+    'Evaluation'
+  ]]);
+  setColumnWidths_(sheet, [160, 80, 160, 100, 100, 110, 400]);
+  sheet.setFrozenRows(1);
+  formatHeaderRow_(sheet, 1, 7);
+}
+
+function ensureEvaluationHistoryHeaders_(sheet) {
+  if (sheet.getRange('A1').getValue() === 'Timestamp') {
+    formatHeaderRow_(sheet, 1, 7);
+    return;
+  }
+  setupEvaluationHistorySheet_(sheet);
+}
+
+function ensureEvaluationHistorySheet_(ss) {
+  var sheet = ensureSheet_(ss, 'EvaluationHistory');
+  ensureEvaluationHistoryHeaders_(sheet);
+  return sheet;
+}
+
+function appendEvaluationHistoryRows_(historyRows) {
+  if (!historyRows || !historyRows.length) {
+    return;
+  }
+
+  var ss = getQuizSpreadsheet_();
+  var sheet = ensureEvaluationHistorySheet_(ss);
+  var startRow = sheet.getLastRow() + 1;
+  sheet.getRange('A' + startRow + ':G' + (startRow + historyRows.length - 1)).setValues(historyRows);
 }
 
 function setupInstructionsSheet_(ss) {
@@ -1817,6 +1865,20 @@ function updateEvaluation(row, evaluationText) {
     throw new Error('Evaluation row not found.');
   }
 
+  var rowValues = evalSheet.getRange('B' + row + ':G' + row).getValues()[0];
+  var currentEvaluation = cellText_(rowValues[3]).trim();
+  if (evaluationText !== currentEvaluation) {
+    appendEvaluationHistoryRows_([[
+      new Date(),
+      'Teacher',
+      cellText_(rowValues[0]),
+      normalizeSheetId_(rowValues[4]),
+      normalizeSheetId_(rowValues[5]),
+      row,
+      evaluationText
+    ]]);
+  }
+
   evalSheet.getRange('E' + row).setValue(evaluationText);
   SpreadsheetApp.flush();
   return 'Evaluation updated successfully.';
@@ -2307,6 +2369,8 @@ function writeBatchEvaluationResults_(
     }
   }
 
+  var historyRows = [];
+
   for (i = 0; i < entries.length; i++) {
     var entry = entries[i];
     var evaluationText;
@@ -2334,9 +2398,19 @@ function writeBatchEvaluationResults_(
       quizId
     ]]);
     responsesSheet.getRange('D' + entry.responseRow).setValue(newStatus);
+    historyRows.push([
+      new Date(),
+      'AI',
+      entry.studentName,
+      questionId,
+      quizId,
+      entry.responseRow,
+      evaluationText
+    ]);
     written++;
   }
 
+  appendEvaluationHistoryRows_(historyRows);
   return written;
 }
 
@@ -2508,6 +2582,7 @@ function triggerEvaluationByQuestion_(quizId) {
   var evalSheet = ensureSheet_(ss, 'Evaluations');
   var responsesSheet = ss.getSheetByName('Responses');
   ensureEvaluationsHeaders_(evalSheet);
+  ensureEvaluationHistorySheet_(ss);
   ensureResponsesHeaders_(responsesSheet);
   var anthropicApiKey = getAnthropicApiKey_();
   var stepIndex;
