@@ -24,7 +24,7 @@ Container-bound Google Apps Script + clasp project for a teacher/student multi-q
 - **Questions** — A = row, B = question, C = rubric, D = quiz name, E = quiz ID, F = question ID, G = image (`data:image/...;base64,...` for new saves; legacy `PARTS:n` still supported)
 - **QuestionImages** — legacy chunked storage (A = question ID, B = quiz ID, C = part, D = chunk); still read for old `PARTS:n` rows
 - **Responses** — A = timestamp, B = name, C = answer, D = status, E = question ID, F = quiz ID (one row per answer)
-- **Evaluations** — A = timestamp, B = name, C = answer, D = rubric, E = **Evaluation** (feedback text only; no `Score: X/4` prefix), F = question ID, G = quiz ID, **H = Student Review** (student question/comment), **I = Points** (0–4 integer; AI-written, teacher-editable)
+- **Evaluations** — A = timestamp, B = name, C = answer, D = *(legacy rubric — unused for new writes; rubric lives on Questions C)*, E = **Evaluation** (feedback text only; no `Score: X/4` prefix), F = question ID, G = quiz ID, **H = Student Review** (student question/comment), **I = Points** (0–4 integer; AI-written, teacher-editable)
 - **EvaluationHistory** — append-only log of every evaluation version (no web UI): A = timestamp, B = source (`AI` / `Teacher`), C = student name, D = question ID, E = quiz ID, F = Evaluations row, G = evaluation text, **H = Points**
 - **Logs** — A = timestamp, B = level, C = source, D = message, E = details (JSON)
 
@@ -37,7 +37,7 @@ Questions in the same quiz share **quiz name** (D) and **quiz ID** (E). Each que
 - **Do not reintroduce transport chunking** unless a proven payload limit is hit; chunking multiplies round trips (~15 s vs ~5 s for typical images).
 - **Legacy read path:** `PARTS:n` in G + **QuestionImages** tab still loads via `readQuestionImageDataForQuestion_`.
 - **Student:** `getQuestionsForQuiz` returns `hasImage` only (uses `questionHasImageMarker_`); image loaded lazily via `getQuestionImage` + client `imageCache`.
-- **Review (teacher + student):** `getEvaluationsForQuiz` returns `hasImage` (not `imageData`); lazy load via `getQuestionImage` + `imageCache`.
+- **Review (teacher + student):** `getEvaluationsForQuiz` returns `hasImage` (not `imageData`); lazy load via `getQuestionImage` + `imageCache`. **Rubric** resolved from **Questions** by question ID (+ quiz ID); Evaluations column D is legacy fallback only.
 
 ## IDs and linking
 
@@ -49,7 +49,7 @@ Questions in the same quiz share **quiz name** (D) and **quiz ID** (E). Each que
 
 1. Teacher creates quiz (questions + rubrics).
 2. Students take quiz → Responses (**Pending**).
-3. Teacher runs **Evaluate** → AI writes Evaluations column **E** (feedback) and **I** (points), appends **EvaluationHistory** (`AI`); Responses → **Complete**.
+3. Teacher runs **Evaluate** → AI writes Evaluations column **E** (feedback) and **I** (points); column **D** left empty (rubric read from Questions at grade + review time); appends **EvaluationHistory** (`AI`); Responses → **Complete**.
 4. Students open **Review Results** → read points and evaluation feedback; optional question/comment saved to Evaluations column H.
 5. Teacher opens **Review** → browse all evaluations or **Student Comments Only** to focus on flagged items. **Edit Evaluation** updates columns **E** and **I** and appends **EvaluationHistory** (`Teacher`) when either changes.
 
@@ -106,9 +106,12 @@ Per-question rubrics (Questions column C) should list **requested facts** and **
 
 - Model: `claude-haiku-4-5-20251001` via `triggerEvaluationByQuestion_(quizId)`.
 - Groups **Pending** responses by question; sends up to **15 student answers per API call** (`EVAL_BATCH_SIZE_`).
+- API payload per student: `{ id, answer }` only — **do not** send `studentName` (reduces wrong-name bleed in batch feedback).
 - Model returns JSON array: `[{ id, score, feedback }]` where `id` = Responses row number and `score` is 0–4.
 - **Points** (`score`) → Evaluations column **I**; **feedback** → column **E** (no `Score: X/4` in feedback text).
 - **Feedback structure** (prompt in `callAnthropicBatchGrade_`): (1) context-specific comments citing the student answer and rubric facts; (2) closing sentence justifying the score using the scale (all / most / some / one / none of requested facts). Typically 3–6 sentences; do not replace detailed feedback with only generic scale language.
+- **Feedback voice:** address the student as **"you"**; never use student names or third-person phrasing in feedback text.
+- **Name-mismatch guard:** `detectForeignStudentNameInFeedback_` logs a **warn** to **Logs** if feedback contains another batchmate's first name (score/row mapping unchanged — cosmetic model error, not wrong-student grading).
 - Appends each version to **EvaluationHistory** (`AI`) with both evaluation text and points.
 - Text-only grading (images not sent to model).
 - Validated pilots:

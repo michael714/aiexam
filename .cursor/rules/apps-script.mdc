@@ -43,8 +43,9 @@ Key helpers:
 - `executeEvaluationPlanStep_(plan, stepIndex, ...)` — one Anthropic batch + sheet writes
 - `buildEvaluationResult_(plan, actualMs)` — return object + `logEvaluationUiEvent_('serverResultReady', ...)`
 - `collectPendingResponsesByQuestion_(allResponses, quizId)` — group Pending rows by question
-- `callAnthropicBatchGrade_(apiKey, question, rubric, entries)` — one API call for up to `EVAL_BATCH_SIZE_` (15) answers; **always** prepends `EVAL_GRADING_PHILOSOPHY_` (Grading for Equity 0–4 scale); feedback = context-specific comments first, score justification last
-- `extractJsonFromModelText_(text)`, `formatBatchEvaluationText_(score, feedback)` (feedback only — no score prefix), `writeBatchEvaluationResults_` (writes Evaluations E + I, appends **EvaluationHistory** `AI` rows with points)
+- `callAnthropicBatchGrade_(apiKey, question, rubric, entries)` — one API call for up to `EVAL_BATCH_SIZE_` (15) answers; payload sends `{ id, answer }` per student (**no** `studentName`); **always** prepends `EVAL_GRADING_PHILOSOPHY_` (Grading for Equity 0–4 scale); prompt requires **"you"** voice (no names in feedback)
+- `detectForeignStudentNameInFeedback_(feedback, entry, allEntries)` — warns to **Logs** when feedback mentions another student's first name in the same batch
+- `extractJsonFromModelText_(text)`, `formatBatchEvaluationText_(score, feedback)` (feedback only — no score prefix), `writeBatchEvaluationResults_` (writes Evaluations A–G + I; column **D** empty; does **not** duplicate rubric; appends **EvaluationHistory** `AI` rows with points)
 - Points helpers: `normalizeEvaluationPoints_`, `parseLegacyScoreFromEvaluation_`, `stripLegacyScorePrefixFromEvaluation_`, `resolveEvaluationPointsForRow_`, `resolveEvaluationFeedbackForClient_`, `backfillEvaluationPoints_` / `backfillEvaluationPointsWithConfirm`
 - Constants: `EVAL_BATCH_SIZE_ = 15`, `EVAL_BATCH_MAX_TOKENS_ = 8192`, `EVAL_MODEL_ = 'claude-haiku-4-5-20251001'`, `EVAL_SCORE_MAX_ = 4`, `EVAL_GRADING_PHILOSOPHY_`, `EVAL_ESTIMATE_SEC_PER_API_CALL_ = 5`, `EVAL_ESTIMATE_SEC_OVERHEAD_ = 3`
 - Scores: whole numbers **0–4** in Evaluations column **I**; column **E** is feedback text only (no `Score: X/4`)
@@ -67,7 +68,7 @@ Key helpers:
 - `getQuizEvaluationList()` — all quizzes + `pendingCount` + `lastEvaluation` (serialized; primitives only)
 - `triggerEvaluation(quizId)` — question-first batch grading; omit `quizId` to grade all (menu); returns result object with `evalRunId`, `estimatedSec`, `actualSec`, etc.
 - `getQuizReviewList()` — quizzes + `evaluatedCount` + `commentedCount`
-- `getEvaluationsForQuiz(quizId)` — returns `points`, `hasImage`, `studentReviewText` (not `imageData`); lazy image load on client; legacy score parse from E when I empty; server sorts student-first (client re-filters/re-sorts in `teacher.html` Review UI)
+- `getEvaluationsForQuiz(quizId)` — returns `points`, `hasImage`, `studentReviewText` (not `imageData`); `rubricText` from **Questions** via question ID (Evaluations column D legacy fallback only); lazy image load on client; legacy score parse from E when I empty; server sorts student-first (client re-filters/re-sorts in `teacher.html` Review UI)
 - `updateEvaluation(row, evaluationText, points)` — teacher edit of columns E and I; validates points 0–4; appends **EvaluationHistory** (`Teacher`) when points or feedback changes
 - `seedHistogramPilotQuiz()` / `seedHistogramPilotQuizWithAlert()` — 2-question pilot + 5 student responses
 - `seedExtendedHistogramPilotQuiz()` / `seedExtendedHistogramPilotQuizWithAlert()` — 8-question pilot + 16 students (128 responses)
@@ -133,7 +134,8 @@ sheet.getRange('A' + startRow + ':F' + endRow).setValues(rows);
 ```
 
 - Questions `A2:G` indices: `[1]` question, `[2]` rubric, `[4]` quiz ID, `[5]` question ID, `[6]` image
-- Evaluations `A2:I` indices: `[4]` feedback, `[5]` question ID, `[6]` quiz ID, `[7]` student review, `[8]` points
+- Evaluations `A2:I` indices: `[3]` legacy rubric (unused for new writes), `[4]` feedback, `[5]` question ID, `[6]` quiz ID, `[7]` student review, `[8]` points
+- **Do not** write rubric text to Evaluations column D on new evaluations — rubric is canonical on **Questions** column C; lookup by question ID in `getEvaluationsForQuiz` / grading
 - EvaluationHistory `A2:H` indices: `[1]` source (`AI`/`Teacher`), `[2]` student name, `[3]` question ID, `[4]` quiz ID, `[5]` Evaluations row, `[6]` evaluation text, `[7]` points
 - Call `ensureResponsesHeaders_` before reading/writing Responses
 - Call `ensureEvaluationsHeaders_` before reading/writing Evaluations (including columns H and I)

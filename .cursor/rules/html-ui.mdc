@@ -128,7 +128,7 @@ Do not use `id="questionText"` on student page.
 
 **Review `getQuizReviewList`:** `quizId`, `quizName`, `questionCount`, `evaluatedCount`, `commentedCount`
 
-**Review `getEvaluationsForQuiz`:** `row`, `questionText`, `qPrompt`, `answerText`, `rubricText`, `evaluationText`, `points`, `studentReviewText`, `hasImage`, `questionNumber`, `studentName`, `questionId`, `quizId`
+**Review `getEvaluationsForQuiz`:** `row`, `questionText`, `qPrompt`, `answerText`, `rubricText` (from **Questions** by question ID — not stored on Evaluations for new rows), `evaluationText`, `points`, `studentReviewText`, `hasImage`, `questionNumber`, `studentName`, `questionId`, `quizId`
 
 ## Image client limits
 

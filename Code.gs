@@ -1960,7 +1960,7 @@ function getEvaluationsForQuiz(quizId) {
       timestamp: rows[i][0] instanceof Date ? rows[i][0].toISOString() : rows[i][0],
       studentName: cellText_(rows[i][1]),
       answerText: cellText_(rows[i][2]),
-      rubricText: cellText_(rows[i][3]) || (details ? details.rubricText : ''),
+      rubricText: (details ? details.rubricText : '') || cellText_(rows[i][3]),
       evaluationText: evaluationText,
       points: points,
       studentReviewText: cellText_(rows[i][7]),
@@ -2401,12 +2401,40 @@ function sortQuestionGroupKeys_(questionOrder, groups, questionBank) {
   return questionOrder;
 }
 
+function detectForeignStudentNameInFeedback_(feedback, entry, allEntries) {
+  var text = String(feedback || '').toLowerCase();
+  if (!text) {
+    return '';
+  }
+
+  var ownParts = String(entry.studentName || '').trim().split(/\s+/);
+  var ownFirst = ownParts[0] ? ownParts[0].toLowerCase() : '';
+  var j;
+
+  for (j = 0; j < allEntries.length; j++) {
+    var other = allEntries[j];
+    if (other.responseRow === entry.responseRow) {
+      continue;
+    }
+
+    var otherParts = String(other.studentName || '').trim().split(/\s+/);
+    var otherFirst = otherParts[0] ? otherParts[0].toLowerCase() : '';
+    if (!otherFirst || otherFirst.length < 3 || otherFirst === ownFirst) {
+      continue;
+    }
+    if (text.indexOf(otherFirst) !== -1) {
+      return other.studentName;
+    }
+  }
+
+  return '';
+}
+
 function callAnthropicBatchGrade_(apiKey, question, rubric, entries) {
   var studentPayload = [];
   for (var i = 0; i < entries.length; i++) {
     studentPayload.push({
       id: String(entries[i].responseRow),
-      studentName: entries[i].studentName,
       answer: entries[i].answer
     });
   }
@@ -2437,6 +2465,7 @@ function callAnthropicBatchGrade_(apiKey, question, rubric, entries) {
     '  1) Context-specific feedback: cite what the student got right or wrong on this question, referencing their answer and the rubric requested facts; note misconceptions when relevant.',
     '  2) Score justification (closing sentence): state why the score fits the Grading for Equity level (all, most, some, one, or none of the requested facts).',
     '- Example structure: "You correctly identified … but did not … which the rubric asked for. This earns a 3 because most requested facts are correct, but not all."',
+    '- Address the student as "you". Do not use student names or third-person phrasing (for example, do not write "Jordan" or "this student").',
     '- Be specific and constructive; use as many sentences as needed for substantive feedback (typically 3-6).'
   ].join('\n');
 
@@ -2501,7 +2530,6 @@ function writeBatchEvaluationResults_(
   evalSheet,
   responsesSheet,
   entries,
-  rubric,
   questionId,
   quizId,
   batchResult
@@ -2534,6 +2562,20 @@ function writeBatchEvaluationResults_(
       var graded = resultMap[String(entry.responseRow)];
       evaluationText = formatBatchEvaluationText_(graded.score, graded.feedback);
       newStatus = 'Complete';
+      var foreignName = detectForeignStudentNameInFeedback_(
+        graded.feedback,
+        entry,
+        entries
+      );
+      if (foreignName) {
+        logQuizEvent_('warn', 'evaluation', 'feedback used another student name', {
+          studentName: entry.studentName,
+          foreignName: foreignName,
+          responseRow: entry.responseRow,
+          questionId: questionId,
+          quizId: quizId
+        });
+      }
     }
 
     var points = null;
@@ -2545,7 +2587,7 @@ function writeBatchEvaluationResults_(
       entry.timestamp,
       entry.studentName,
       entry.answer,
-      rubric,
+      '',
       evaluationText,
       questionId,
       quizId
@@ -2676,7 +2718,6 @@ function executeEvaluationPlanStep_(plan, stepIndex, evalSheet, responsesSheet, 
     evalSheet,
     responsesSheet,
     step.entries,
-    step.rubric,
     step.questionId,
     step.rowQuizId,
     batchResult
