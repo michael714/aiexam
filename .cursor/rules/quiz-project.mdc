@@ -24,8 +24,8 @@ Container-bound Google Apps Script + clasp project for a teacher/student multi-q
 - **Questions** — A = row, B = question, C = rubric, D = quiz name, E = quiz ID, F = question ID, G = image (`data:image/...;base64,...` for new saves; legacy `PARTS:n` still supported)
 - **QuestionImages** — legacy chunked storage (A = question ID, B = quiz ID, C = part, D = chunk); still read for old `PARTS:n` rows
 - **Responses** — A = timestamp, B = name, C = answer, D = status, E = question ID, F = quiz ID (one row per answer)
-- **Evaluations** — A = timestamp, B = name, C = answer, D = rubric, E = **Evaluation** (current text; AI-generated initially, teacher-editable), F = question ID, G = quiz ID, **H = Student Review** (student question/comment after reading evaluation)
-- **EvaluationHistory** — append-only log of every evaluation version (no web UI): A = timestamp, B = source (`AI` / `Teacher`), C = student name, D = question ID, E = quiz ID, F = Evaluations row, G = evaluation text
+- **Evaluations** — A = timestamp, B = name, C = answer, D = rubric, E = **Evaluation** (feedback text only; no `Score: X/4` prefix), F = question ID, G = quiz ID, **H = Student Review** (student question/comment), **I = Points** (0–4 integer; AI-written, teacher-editable)
+- **EvaluationHistory** — append-only log of every evaluation version (no web UI): A = timestamp, B = source (`AI` / `Teacher`), C = student name, D = question ID, E = quiz ID, F = Evaluations row, G = evaluation text, **H = Points**
 - **Logs** — A = timestamp, B = level, C = source, D = message, E = details (JSON)
 
 Questions in the same quiz share **quiz name** (D) and **quiz ID** (E). Each question row has its own **question ID** (F). IDs are random 8-character strings (no ambiguous chars).
@@ -49,17 +49,21 @@ Questions in the same quiz share **quiz name** (D) and **quiz ID** (E). Each que
 
 1. Teacher creates quiz (questions + rubrics).
 2. Students take quiz → Responses (**Pending**).
-3. Teacher runs **Evaluate** → AI writes Evaluations column E and appends **EvaluationHistory** (`AI`); Responses → **Complete**.
-4. Students open **Review Results** → read current evaluation; optional question/comment saved to Evaluations column H.
-5. Teacher opens **Review** → browse all evaluations or **Student Comments Only** to focus on flagged items. **Edit Evaluation** updates column E and appends **EvaluationHistory** (`Teacher`) when text changes.
+3. Teacher runs **Evaluate** → AI writes Evaluations column **E** (feedback) and **I** (points), appends **EvaluationHistory** (`AI`); Responses → **Complete**.
+4. Students open **Review Results** → read points and evaluation feedback; optional question/comment saved to Evaluations column H.
+5. Teacher opens **Review** → browse all evaluations or **Student Comments Only** to focus on flagged items. **Edit Evaluation** updates columns **E** and **I** and appends **EvaluationHistory** (`Teacher`) when either changes.
 
 ## Teacher workflow
 
 1. **Add Question** — quiz name, question, rubric, optional image; reusing quiz name reuses quiz ID.
 2. **Evaluate** — lists **all quizzes** from Questions (not only those with Pending responses). **Evaluate** is disabled when `pendingCount === 0`. Each card shows **last evaluation timing** from Logs (estimated + server actual; client wait when logged). Run grading via `triggerEvaluation(quizId)` (single server call, question-first batching).
-3. **Review** — pick a quiz; browse evaluations in a **2×2 grid** (Question | Student Response, Rubric | **Evaluation**) plus a full-width **Student Question or Comment** row below. **Show:** **All Questions** (default) or **Student Comments Only** (client-side filter on `studentReviewText`; disabled when `commentedCount === 0`). **Sort by Student** (default) or **Question** (client-side). Quiz list cards show `evaluatedCount` and `commentedCount`. **Edit Evaluation** → `updateEvaluation` (appends **EvaluationHistory** when text changes).
+3. **Review** — pick a quiz; browse evaluations in a **2×2 grid** (Question | Student Response, Rubric | **Evaluation**) plus a full-width **Student Question or Comment** row below. **Points** (`Points: [n] / 4`) on the **bottom nav** between Back to Quizzes and Previous (editable in edit mode; student sees read-only). **Show:** **All Questions** (default) or **Student Comments Only** (client-side filter on `studentReviewText`; disabled when `commentedCount === 0`). **Sort by Student** (default) or **Question** (client-side). Quiz list cards show `evaluatedCount` and `commentedCount`. **Edit Evaluation** → `updateEvaluation(row, evaluationText, points)` (appends **EvaluationHistory** when points or feedback changes).
 
-Spreadsheet menu: **Quiz → Run AI Evaluation**, **Seed Histogram Pilot Quiz**, **Seed Extended Pilot Quiz**, **Clear all quiz data...**, **Open Logs**, **Authorize API access**, **Set up sheets**.
+Spreadsheet menu: **Quiz → Run AI Evaluation**, **Seed Histogram Pilot Quiz**, **Seed Extended Pilot Quiz**, **Backfill evaluation points...**, **Clear all quiz data...**, **Open Logs**, **Authorize API access**, **Set up sheets**.
+
+**Set up sheets** is **non-destructive** — uses `ensure*Headers_` only; adds/updates column headers (e.g. **Points** on Evaluations I) without clearing quiz data. Do **not** call destructive `setupQuestionsSheet_` from `setupSheet` (that function calls `sheet.clear()`).
+
+**Backfill evaluation points** — one-shot menu action: parses legacy `Score: X/4` from column E into column I and strips the prefix from E; idempotent; not run on every request.
 
 **Clear all quiz data** deletes all data rows in Questions, Responses, Evaluations, and **EvaluationHistory** (headers kept). **Logs** are not cleared. Use before re-seeding pilots.
 
@@ -67,7 +71,7 @@ Spreadsheet menu: **Quiz → Run AI Evaluation**, **Seed Histogram Pilot Quiz**,
 
 1. Open deployment URL (no query string).
 2. **Take a Quiz** (default mode): enter name, pick quiz — **one server call** loads all question text/metadata (not images). Answer one question at a time; **Submit Quiz** → Responses, Status **Pending**.
-3. **Review Results**: enter name → `getStudentReviewQuizList` shows quizzes with evaluations for that student → browse question-by-question (2×2 grid + editable comment row). Comments saved via `updateStudentReview` to Evaluations column H. Auto-save on Previous/Next; **Save Comment** for explicit save.
+3. **Review Results**: enter name → `getStudentReviewQuizList` shows quizzes with evaluations for that student → browse question-by-question (2×2 grid + editable comment row). **Points** on bottom nav (read-only), same position as teacher Review. Comments saved via `updateStudentReview` to Evaluations column H. Auto-save on Previous/Next; **Save Comment** for explicit save.
 
 ## URLs
 
@@ -82,7 +86,9 @@ Spreadsheet menu: **Quiz → Run AI Evaluation**, **Seed Histogram Pilot Quiz**,
 4. Run **Quiz → Authorize API access** once for `UrlFetchApp`
 5. Web app: Execute as **Me**, access **Anyone**
 
-**Verify HTML deploy:** both `student.html` and `teacher.html` show `#buildLabel` at bottom of the card (e.g. `build: 20260629-eval-history`). **Bump the build string** in both files whenever shipping UI changes; tell the user what to look for. Do **not** rely on the left-hand deployment description in Manage deployments — that is the deployment label, not the version note, and may not change when a new version is created.
+**Verify HTML deploy:** both `student.html` and `teacher.html` show `#buildLabel` at bottom of the card (e.g. `build: 20260630-points-bottom`). **Bump the build string** in both files whenever shipping UI changes; tell the user what to look for. Do **not** rely on the left-hand deployment description in Manage deployments — that is the deployment label, not the version note, and may not change when a new version is created.
+
+**Code.gs-only changes** (e.g. grading prompt): `clasp push` + spreadsheet refresh is enough; web app redeploy not required.
 
 Anthropic API calls run on **Google's servers**, not the school network.
 
@@ -101,7 +107,9 @@ Per-question rubrics (Questions column C) should list **requested facts** and **
 - Model: `claude-haiku-4-5-20251001` via `triggerEvaluationByQuestion_(quizId)`.
 - Groups **Pending** responses by question; sends up to **15 student answers per API call** (`EVAL_BATCH_SIZE_`).
 - Model returns JSON array: `[{ id, score, feedback }]` where `id` = Responses row number and `score` is 0–4.
-- Writes Evaluations column E as `Score: X/4\n\n{feedback}` and appends each version to **EvaluationHistory** (`AI`).
+- **Points** (`score`) → Evaluations column **I**; **feedback** → column **E** (no `Score: X/4` in feedback text).
+- **Feedback structure** (prompt in `callAnthropicBatchGrade_`): (1) context-specific comments citing the student answer and rubric facts; (2) closing sentence justifying the score using the scale (all / most / some / one / none of requested facts). Typically 3–6 sentences; do not replace detailed feedback with only generic scale language.
+- Appends each version to **EvaluationHistory** (`AI`) with both evaluation text and points.
 - Text-only grading (images not sent to model).
 - Validated pilots:
   - **Histograms Pilot Quiz** — 5 students × 2 questions = 10 answers, **2 API calls** (~13 s)
@@ -119,11 +127,11 @@ Per-question rubrics (Questions column C) should list **requested facts** and **
 
 ## Evaluation history (sheet-only)
 
-- **Evaluations** column E holds only the **current** evaluation (what students and teacher Review display).
-- **EvaluationHistory** is append-only: `writeBatchEvaluationResults_` logs `AI` rows; `updateEvaluation` logs `Teacher` rows only when text changes.
+- **Evaluations** column E holds the **current feedback**; column **I** holds the **current points** (what students and teacher Review display).
+- **EvaluationHistory** is append-only: `writeBatchEvaluationResults_` logs `AI` rows; `updateEvaluation` logs `Teacher` rows when **points or feedback** changes.
 - Created by **Set up sheets** (`ensureEvaluationHistorySheet_`); no web UI — browse/filter in the spreadsheet tab.
 - Re-running **Evaluate** on the same response appends another `AI` row; prior versions remain in history.
-- Existing evaluations before this feature have no history until re-graded or teacher-edited.
+- Legacy rows may have `Score: X/4` embedded in column E — use **Backfill evaluation points** or read-time parse via `resolveEvaluationPointsForRow_` / `resolveEvaluationFeedbackForClient_`.
 
 ## UI feedback
 

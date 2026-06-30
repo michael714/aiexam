@@ -180,7 +180,9 @@
 
       .nav-row .left,
       .nav-row .right {
+        align-items: center;
         display: flex;
+        flex-wrap: wrap;
         gap: 12px;
       }
 
@@ -364,6 +366,33 @@
         min-height: 100%;
         overflow-y: auto;
         resize: none;
+      }
+
+      #view-student-review .nav-row .eval-points-row {
+        align-items: center;
+        display: flex;
+        flex-shrink: 0;
+        font-size: 14px;
+        gap: 6px;
+        margin-left: 4px;
+      }
+
+      #view-student-review .nav-row .eval-points-label {
+        color: #5f6368;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
+      #view-student-review .nav-row .eval-points-value {
+        color: #202124;
+        font-weight: 600;
+        min-width: 1em;
+        text-align: center;
+      }
+
+      #view-student-review .nav-row .eval-points-suffix {
+        color: #5f6368;
+        white-space: nowrap;
       }
 
       #view-student-review .review-grid .question-field {
@@ -588,6 +617,11 @@
         <div class="nav-row">
           <div class="left">
             <button type="button" class="secondary" onclick="backToSelectFromReview()">Back to Quizzes</button>
+            <div class="eval-points-row" id="studentReviewPointsRow">
+              <span class="eval-points-label">Points:</span>
+              <span id="studentReviewPoints" class="eval-points-value">—</span>
+              <span class="eval-points-suffix">/ 4</span>
+            </div>
           </div>
           <div class="right">
             <button type="button" class="secondary" id="studentReviewPrevBottom" onclick="goToStudentReviewPrevious()">Previous</button>
@@ -599,7 +633,7 @@
         <div class="message" id="studentReviewMessage"></div>
       </section>
 
-      <div class="build-label" id="buildLabel">build: 20260629-eval-history</div>
+      <div class="build-label" id="buildLabel">build: 20260630-points-bottom</div>
     </div>
 
     <div id="processingOverlay" class="processing-overlay">
@@ -822,6 +856,8 @@
         document.getElementById('studentReviewAnswer').textContent = item.answerText || '';
         document.getElementById('studentReviewRubric').textContent = item.rubricText || '';
         document.getElementById('studentReviewEvaluation').value = item.evaluationText || '';
+        document.getElementById('studentReviewPoints').textContent =
+          item.points === null || item.points === undefined || item.points === '' ? '—' : String(item.points);
 
         studentReviewState.originalReview = item.studentReviewText || '';
         document.getElementById('studentReviewComment').value = studentReviewState.originalReview;

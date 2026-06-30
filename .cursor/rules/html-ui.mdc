@@ -25,7 +25,7 @@ alwaysApply: false
 
 Both `student.html` and `teacher.html` include at the bottom of `.container`:
 
-- `#buildLabel.build-label` — small gray text, right-aligned (e.g. `build: 20260629-eval-history`)
+- `#buildLabel.build-label` — small gray text, right-aligned (e.g. `build: 20260630-points-bottom`)
 - **Bump both files together** when shipping HTML UI changes; use `YYYYMMDD-` prefix with year **2026+** and a short feature slug
 - After `clasp push`, user must **Manage deployments → pencil → New version → Deploy**; confirm live page shows the new build string (more reliable than the deployment description in the GAS UI)
 
@@ -68,15 +68,15 @@ Review detail layout (top to bottom):
 2. **Top nav:** Back to Quizzes · Previous · Next (`data-review-nav="prev|next"`)
 3. **2×2 grid** (`#reviewGrid`, `.review-grid`) — goal is full review visible without page scroll on typical content:
    - Row 1: **Question** (`#reviewQuestion` + optional `#reviewQuestionImage`) | **Student Response** (`#reviewAnswer`)
-   - Row 2: **Rubric** (`#reviewRubric`) | **Evaluation** (`#reviewEvaluation` textarea; editable in edit mode; saves via `updateEvaluation` → **EvaluationHistory** on change)
+   - Row 2: **Rubric** (`#reviewRubric`) | **Evaluation** (`#reviewEvaluation` textarea only — full cell height; editable in edit mode; saves via `updateEvaluation(row, evaluationText, points)` → **EvaluationHistory** on change)
    - Each cell: `.content-block` → `.content-label` + `.review-grid-scroll` → `.content-field`
    - Cells use `aspect-ratio: 2 / 1`; container widens to **1040px** while `#review-detail.active` (`.container:has(#review-detail.active)`)
 4. **Student comment row** (`#reviewCommentRow`): readonly `#reviewStudentComment` (`.comment-field`; `.empty-comment` when blank)
-5. **Bottom nav:** Back · Previous · Next · Edit Evaluation · Submit Changes
+5. **Bottom nav:** Back to Quizzes · **Points** (`#reviewPointsRow`, `#reviewPoints` input, `Points: [n] / 4`) · Previous · Next · Edit Evaluation · Submit Changes — points editable only in edit mode; narrow `2em` input
 6. **Footer:** `#reviewFooterStudent`, `#reviewFooterQuestion`
 7. `syncReviewNavButtons(isFirst, isLast, editing)` keeps top/bottom nav in sync
 
-`reviewState`: `{ quiz, rawItems, items, filterMode, sortMode, currentIndex, editing, originalEvaluation, imageCache }` — `filterMode` and `sortMode` reset to `'all'` / `'student'` when opening a quiz.
+`reviewState`: `{ quiz, rawItems, items, filterMode, sortMode, currentIndex, editing, originalEvaluation, originalPoints, imageCache }` — `filterMode` and `sortMode` reset to `'all'` / `'student'` when opening a quiz.
 
 Use `textContent` for readonly blocks; `item.qPrompt || item.questionText` for question text.
 
@@ -98,7 +98,8 @@ Take-quiz flow:
 
 Student review detail (`#view-student-review`):
 
-- Same **2×2 grid** as teacher (Question | Your Answer, Rubric | **Evaluation**); container widens to **1040px** while active
+- Same **2×2 grid** as teacher (Question | Your Answer, Rubric | **Evaluation** — full cell height, no points inside grid); container widens to **1040px** while active
+- **Bottom nav:** Back to Quizzes · **Points** (`#studentReviewPointsRow`, `#studentReviewPoints` read-only span) · Previous · Next · Save Comment — same points position as teacher
 - Full-width **Your Question or Comment** (`#studentReviewComment`) below grid; save via `updateStudentReview`
 - Auto-save on Previous/Next; **Save Comment** button
 - `studentReviewState`: `{ quizId, quizName, items, currentIndex, imageCache, originalReview, saving }`
@@ -127,7 +128,7 @@ Do not use `id="questionText"` on student page.
 
 **Review `getQuizReviewList`:** `quizId`, `quizName`, `questionCount`, `evaluatedCount`, `commentedCount`
 
-**Review `getEvaluationsForQuiz`:** `row`, `questionText`, `qPrompt`, `answerText`, `rubricText`, `evaluationText`, `studentReviewText`, `hasImage`, `questionNumber`, `studentName`, `questionId`, `quizId`
+**Review `getEvaluationsForQuiz`:** `row`, `questionText`, `qPrompt`, `answerText`, `rubricText`, `evaluationText`, `points`, `studentReviewText`, `hasImage`, `questionNumber`, `studentName`, `questionId`, `quizId`
 
 ## Image client limits
 

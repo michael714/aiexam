@@ -43,10 +43,11 @@ Key helpers:
 - `executeEvaluationPlanStep_(plan, stepIndex, ...)` — one Anthropic batch + sheet writes
 - `buildEvaluationResult_(plan, actualMs)` — return object + `logEvaluationUiEvent_('serverResultReady', ...)`
 - `collectPendingResponsesByQuestion_(allResponses, quizId)` — group Pending rows by question
-- `callAnthropicBatchGrade_(apiKey, question, rubric, entries)` — one API call for up to `EVAL_BATCH_SIZE_` (15) answers; **always** prepends `EVAL_GRADING_PHILOSOPHY_` (Grading for Equity 0–4 scale)
-- `extractJsonFromModelText_(text)`, `formatBatchEvaluationText_(score, feedback)`, `writeBatchEvaluationResults_` (writes Evaluations + appends **EvaluationHistory** `AI` rows)
+- `callAnthropicBatchGrade_(apiKey, question, rubric, entries)` — one API call for up to `EVAL_BATCH_SIZE_` (15) answers; **always** prepends `EVAL_GRADING_PHILOSOPHY_` (Grading for Equity 0–4 scale); feedback = context-specific comments first, score justification last
+- `extractJsonFromModelText_(text)`, `formatBatchEvaluationText_(score, feedback)` (feedback only — no score prefix), `writeBatchEvaluationResults_` (writes Evaluations E + I, appends **EvaluationHistory** `AI` rows with points)
+- Points helpers: `normalizeEvaluationPoints_`, `parseLegacyScoreFromEvaluation_`, `stripLegacyScorePrefixFromEvaluation_`, `resolveEvaluationPointsForRow_`, `resolveEvaluationFeedbackForClient_`, `backfillEvaluationPoints_` / `backfillEvaluationPointsWithConfirm`
 - Constants: `EVAL_BATCH_SIZE_ = 15`, `EVAL_BATCH_MAX_TOKENS_ = 8192`, `EVAL_MODEL_ = 'claude-haiku-4-5-20251001'`, `EVAL_SCORE_MAX_ = 4`, `EVAL_GRADING_PHILOSOPHY_`, `EVAL_ESTIMATE_SEC_PER_API_CALL_ = 5`, `EVAL_ESTIMATE_SEC_OVERHEAD_ = 3`
-- Scores: whole numbers **0–4**; stored as `Score: X/4` in Evaluations column E
+- Scores: whole numbers **0–4** in Evaluations column **I**; column **E** is feedback text only (no `Score: X/4`)
 - Per-question rubrics list **requested facts**; do not use legacy `/10` point-bucket rubrics in new content
 
 ## Evaluation timing helpers
@@ -66,8 +67,8 @@ Key helpers:
 - `getQuizEvaluationList()` — all quizzes + `pendingCount` + `lastEvaluation` (serialized; primitives only)
 - `triggerEvaluation(quizId)` — question-first batch grading; omit `quizId` to grade all (menu); returns result object with `evalRunId`, `estimatedSec`, `actualSec`, etc.
 - `getQuizReviewList()` — quizzes + `evaluatedCount` + `commentedCount`
-- `getEvaluationsForQuiz(quizId)` — returns `hasImage`, `studentReviewText` (not `imageData`); lazy image load on client; server sorts student-first (client re-filters/re-sorts in `teacher.html` Review UI)
-- `updateEvaluation(row, evaluationText)` — teacher edit of column E; appends **EvaluationHistory** (`Teacher`) when text changes
+- `getEvaluationsForQuiz(quizId)` — returns `points`, `hasImage`, `studentReviewText` (not `imageData`); lazy image load on client; legacy score parse from E when I empty; server sorts student-first (client re-filters/re-sorts in `teacher.html` Review UI)
+- `updateEvaluation(row, evaluationText, points)` — teacher edit of columns E and I; validates points 0–4; appends **EvaluationHistory** (`Teacher`) when points or feedback changes
 - `seedHistogramPilotQuiz()` / `seedHistogramPilotQuizWithAlert()` — 2-question pilot + 5 student responses
 - `seedExtendedHistogramPilotQuiz()` / `seedExtendedHistogramPilotQuizWithAlert()` — 8-question pilot + 16 students (128 responses)
 - `clearAllQuizData()` / `clearAllQuizDataWithConfirm()` — wipe Questions/Responses/Evaluations/**EvaluationHistory** data rows (headers kept); Logs preserved
@@ -84,7 +85,7 @@ Key helpers:
 
 **Menu**
 
-- `openLogsSheet`, `setupSheet`, `showAddQuestionDialog`, `runEvaluationWithAlert`, `authorizeExternalRequests`, `seedHistogramPilotQuizWithAlert`, `seedExtendedHistogramPilotQuizWithAlert`, `clearAllQuizDataWithConfirm`
+- `openLogsSheet`, `setupSheet`, `showAddQuestionDialog`, `runEvaluationWithAlert`, `authorizeExternalRequests`, `seedHistogramPilotQuizWithAlert`, `seedExtendedHistogramPilotQuizWithAlert`, `backfillEvaluationPointsWithConfirm`, `clearAllQuizDataWithConfirm`
 
 **Routing**
 
@@ -103,9 +104,14 @@ Legacy upload API (`beginQuestionImageUpload`, `uploadQuestionImagePart`, `uploa
 - `ensureQuestionsHeaders_` — through column G
 - `ensureQuestionImagesSheet_` — QuestionImages tab (legacy)
 - `ensureResponsesHeaders_` — through column F
-- `ensureEvaluationsHeaders_` — through column **H** (adds **Student Review** in H if missing; migrates column E header **AI Evaluation** → **Evaluation**)
-- `ensureEvaluationHistorySheet_`, `ensureEvaluationHistoryHeaders_`, `setupEvaluationHistorySheet_`, `appendEvaluationHistoryRows_` — **EvaluationHistory** tab (append-only; no web API)
+- `ensureEvaluationsHeaders_` — through column **I** (H = Student Review; I = Points; migrates column E header **AI Evaluation** → **Evaluation**)
+- `ensureEvaluationHistorySheet_`, `ensureEvaluationHistoryHeaders_`, `setupEvaluationHistorySheet_`, `appendEvaluationHistoryRows_` — **EvaluationHistory** tab through column **H** (Points); append-only; no web API
 - `ensureLogsSheet_` — Logs tab
+
+## setupSheet (non-destructive)
+
+- `setupSheet` calls `ensureQuestionsHeaders_`, `ensureResponsesHeaders_`, `ensureEvaluationsHeaders_`, etc. — **never** `setupQuestionsSheet_` on existing data (`setupQuestionsSheet_` calls `sheet.clear()`).
+- Destructive `setup*Sheet_` functions are for **brand-new** tabs only (when `ensure*Headers_` detects missing headers).
 
 ## API key
 
@@ -127,10 +133,10 @@ sheet.getRange('A' + startRow + ':F' + endRow).setValues(rows);
 ```
 
 - Questions `A2:G` indices: `[1]` question, `[2]` rubric, `[4]` quiz ID, `[5]` question ID, `[6]` image
-- Evaluations `A2:H` indices: `[4]` current evaluation, `[5]` question ID, `[6]` quiz ID, `[7]` student review
-- EvaluationHistory `A2:G` indices: `[1]` source (`AI`/`Teacher`), `[2]` student name, `[3]` question ID, `[4]` quiz ID, `[5]` Evaluations row, `[6]` evaluation text
+- Evaluations `A2:I` indices: `[4]` feedback, `[5]` question ID, `[6]` quiz ID, `[7]` student review, `[8]` points
+- EvaluationHistory `A2:H` indices: `[1]` source (`AI`/`Teacher`), `[2]` student name, `[3]` question ID, `[4]` quiz ID, `[5]` Evaluations row, `[6]` evaluation text, `[7]` points
 - Call `ensureResponsesHeaders_` before reading/writing Responses
-- Call `ensureEvaluationsHeaders_` before reading/writing Evaluations (including column H)
+- Call `ensureEvaluationsHeaders_` before reading/writing Evaluations (including columns H and I)
 - Wrap `UrlFetchApp.fetch` + `JSON.parse` in try/catch; use `muteHttpExceptions: true`
 - Pass structured payloads as **one object** to `google.script.run` (including `imageData`)
 - **Do not** load full image maps in `getQuestionsForQuiz` or `getEvaluationsForQuiz` — use `hasImage` + lazy `getQuestionImage`

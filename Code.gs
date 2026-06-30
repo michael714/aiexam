@@ -9,6 +9,7 @@ function onOpen() {
     .addItem('Seed Histogram Pilot Quiz', 'seedHistogramPilotQuizWithAlert')
     .addItem('Seed Extended Pilot Quiz', 'seedExtendedHistogramPilotQuizWithAlert')
     .addSeparator()
+    .addItem('Backfill evaluation points...', 'backfillEvaluationPointsWithConfirm')
     .addItem('Clear all quiz data...', 'clearAllQuizDataWithConfirm')
     .addToUi();
 }
@@ -124,7 +125,8 @@ var EVAL_GRADING_PHILOSOPHY_ = [
   '- 2: Correctly addressed some requested facts.',
   '- 1: Addressed at least one requested fact correctly.',
   '- 0: None of the requested facts from the rubric were addressed correctly.',
-  'Use the question-specific rubric below to identify the requested facts. Apply this scale consistently across all students in the batch.'
+  'Use the question-specific rubric below to identify the requested facts. Apply this scale consistently across all students in the batch.',
+  'Feedback has two parts in this order: (1) substantive, question-specific comments citing the student answer and rubric facts; (2) a closing sentence that justifies the score using the scale (all / most / some / one / none of requested facts). Do not replace detailed feedback with only generic scale language.'
 ].join('\n');
 
 function ensureResponsesHeaders_(sheet) {
@@ -178,9 +180,9 @@ function setupSheet(spreadsheetId) {
   var responsesSheet = ensureSheet_(ss, 'Responses');
   var evaluationsSheet = ensureSheet_(ss, 'Evaluations');
 
-  setupQuestionsSheet_(questionsSheet);
-  setupResponsesSheet_(responsesSheet);
-  setupEvaluationsSheet_(evaluationsSheet);
+  ensureQuestionsHeaders_(questionsSheet);
+  ensureResponsesHeaders_(responsesSheet);
+  ensureEvaluationsHeaders_(evaluationsSheet);
   ensureEvaluationHistorySheet_(ss);
   setupInstructionsSheet_(ss);
   ensureLogsSheet_(ss);
@@ -188,7 +190,7 @@ function setupSheet(spreadsheetId) {
 
   removeDefaultSheet_(ss);
 
-  return 'Sheet setup complete. Add questions via the teacher page (?teach) or Quiz > Add Question and Rubric.';
+  return 'Sheet setup complete. Existing quiz data was preserved; headers were added or updated as needed.';
 }
 
 function ensureQuestionsHeaders_(sheet) {
@@ -253,12 +255,12 @@ function setupResponsesSheet_(sheet) {
 }
 
 function setupEvaluationsSheet_(sheet) {
-  sheet.getRange('A1:H1').setValues([
-    ['Timestamp', 'Student Name', 'Answer', 'Rubric', 'Evaluation', 'Question ID', 'Quiz ID', 'Student Review']
+  sheet.getRange('A1:I1').setValues([
+    ['Timestamp', 'Student Name', 'Answer', 'Rubric', 'Evaluation', 'Question ID', 'Quiz ID', 'Student Review', 'Points']
   ]);
-  setColumnWidths_(sheet, [160, 160, 300, 300, 400, 100, 100, 320]);
+  setColumnWidths_(sheet, [160, 160, 300, 300, 400, 100, 100, 320, 60]);
   sheet.setFrozenRows(1);
-  formatHeaderRow_(sheet, 1, 8);
+  formatHeaderRow_(sheet, 1, 9);
 }
 
 function ensureEvaluationsHeaders_(sheet) {
@@ -272,33 +274,40 @@ function ensureEvaluationsHeaders_(sheet) {
     if (sheet.getRange('H1').getValue() !== 'Student Review') {
       sheet.getRange('H1').setValue('Student Review');
     }
+    if (sheet.getRange('I1').getValue() !== 'Points') {
+      sheet.getRange('I1').setValue('Points');
+    }
     if (sheet.getRange('E1').getValue() === 'AI Evaluation') {
       sheet.getRange('E1').setValue('Evaluation');
     }
-    formatHeaderRow_(sheet, 1, 8);
+    formatHeaderRow_(sheet, 1, 9);
     return;
   }
   setupEvaluationsSheet_(sheet);
 }
 
 function setupEvaluationHistorySheet_(sheet) {
-  sheet.getRange('A1:G1').setValues([[
+  sheet.getRange('A1:H1').setValues([[
     'Timestamp',
     'Source',
     'Student Name',
     'Question ID',
     'Quiz ID',
     'Evaluations Row',
-    'Evaluation'
+    'Evaluation',
+    'Points'
   ]]);
-  setColumnWidths_(sheet, [160, 80, 160, 100, 100, 110, 400]);
+  setColumnWidths_(sheet, [160, 80, 160, 100, 100, 110, 400, 60]);
   sheet.setFrozenRows(1);
-  formatHeaderRow_(sheet, 1, 7);
+  formatHeaderRow_(sheet, 1, 8);
 }
 
 function ensureEvaluationHistoryHeaders_(sheet) {
   if (sheet.getRange('A1').getValue() === 'Timestamp') {
-    formatHeaderRow_(sheet, 1, 7);
+    if (sheet.getRange('H1').getValue() !== 'Points') {
+      sheet.getRange('H1').setValue('Points');
+    }
+    formatHeaderRow_(sheet, 1, 8);
     return;
   }
   setupEvaluationHistorySheet_(sheet);
@@ -318,7 +327,148 @@ function appendEvaluationHistoryRows_(historyRows) {
   var ss = getQuizSpreadsheet_();
   var sheet = ensureEvaluationHistorySheet_(ss);
   var startRow = sheet.getLastRow() + 1;
-  sheet.getRange('A' + startRow + ':G' + (startRow + historyRows.length - 1)).setValues(historyRows);
+  sheet.getRange('A' + startRow + ':H' + (startRow + historyRows.length - 1)).setValues(historyRows);
+}
+
+function backfillEvaluationPointsWithConfirm() {
+  var ui = SpreadsheetApp.getUi();
+  var response = ui.alert(
+    'Backfill evaluation points?',
+    'This reads legacy Score: X/4 prefixes from the Evaluation column, writes Points (column I), ' +
+      'and removes the score line from feedback text. Rows that already have points are left unchanged ' +
+      '(except legacy score lines may still be stripped from feedback). Safe to run more than once.',
+    ui.ButtonSet.YES_NO
+  );
+  if (response !== ui.Button.YES) {
+    return;
+  }
+
+  try {
+    var result = backfillEvaluationPoints_();
+    ui.alert(
+      'Backfill complete.\n\n' +
+        'Points backfilled: ' + result.backfilled + '\n' +
+        'Already had points: ' + result.alreadyHadPoints + '\n' +
+        'Feedback prefixes stripped: ' + result.stripped + '\n' +
+        'Rows without parseable score: ' + result.noParseableScore
+    );
+  } catch (error) {
+    ui.alert('Backfill failed:\n\n' + error.message);
+  }
+}
+
+function backfillEvaluationPoints_() {
+  var ss = getQuizSpreadsheet_();
+  var evalSheet = ss.getSheetByName('Evaluations');
+  if (!evalSheet || evalSheet.getLastRow() < 2) {
+    return {
+      backfilled: 0,
+      alreadyHadPoints: 0,
+      stripped: 0,
+      noParseableScore: 0
+    };
+  }
+
+  ensureEvaluationsHeaders_(evalSheet);
+  var lastRow = evalSheet.getLastRow();
+  var rows = evalSheet.getRange('A2:I' + lastRow).getValues();
+  var backfilled = 0;
+  var alreadyHadPoints = 0;
+  var stripped = 0;
+  var noParseableScore = 0;
+  var i;
+
+  for (i = 0; i < rows.length; i++) {
+    var rowNum = i + 2;
+    var evaluation = cellText_(rows[i][4]).trim();
+    var existingPoints = normalizeEvaluationPoints_(rows[i][8]);
+
+    if (existingPoints !== null) {
+      alreadyHadPoints++;
+      if (stripLegacyScorePrefixFromEvaluation_(evaluation) !== evaluation) {
+        evalSheet.getRange('E' + rowNum).setValue(stripLegacyScorePrefixFromEvaluation_(evaluation));
+        stripped++;
+      }
+      continue;
+    }
+
+    if (!evaluation) {
+      continue;
+    }
+
+    var parsed = parseLegacyScoreFromEvaluation_(evaluation);
+    if (parsed === null) {
+      noParseableScore++;
+      continue;
+    }
+
+    evalSheet.getRange('I' + rowNum).setValue(parsed);
+    evalSheet.getRange('E' + rowNum).setValue(stripLegacyScorePrefixFromEvaluation_(evaluation));
+    backfilled++;
+    stripped++;
+  }
+
+  SpreadsheetApp.flush();
+  logQuizEvent_('info', 'backfillEvaluationPoints', 'evaluation points backfilled', {
+    backfilled: backfilled,
+    alreadyHadPoints: alreadyHadPoints,
+    stripped: stripped,
+    noParseableScore: noParseableScore
+  });
+
+  return {
+    backfilled: backfilled,
+    alreadyHadPoints: alreadyHadPoints,
+    stripped: stripped,
+    noParseableScore: noParseableScore
+  };
+}
+
+function normalizeEvaluationPoints_(value) {
+  if (value === '' || value === null || value === undefined) {
+    return null;
+  }
+  var n = Math.round(Number(value));
+  if (isNaN(n)) {
+    return null;
+  }
+  if (n < 0) {
+    n = 0;
+  }
+  if (n > EVAL_SCORE_MAX_) {
+    n = EVAL_SCORE_MAX_;
+  }
+  return n;
+}
+
+function parseLegacyScoreFromEvaluation_(text) {
+  var raw = String(text || '').trim();
+  var match = raw.match(/^Score:\s*(\d+)\s*\/\s*4\b\s*(?:\r?\n\r?\n|\r?\n|$)/i);
+  if (!match) {
+    return null;
+  }
+  return normalizeEvaluationPoints_(match[1]);
+}
+
+function stripLegacyScorePrefixFromEvaluation_(text) {
+  return String(text || '').replace(/^Score:\s*\d+\s*\/\s*4\b\s*(?:\r?\n\r?\n|\r?\n)?/i, '').trim();
+}
+
+function resolveEvaluationPointsForRow_(pointsCell, evaluationText) {
+  var points = normalizeEvaluationPoints_(pointsCell);
+  if (points !== null) {
+    return points;
+  }
+  return parseLegacyScoreFromEvaluation_(evaluationText);
+}
+
+function resolveEvaluationFeedbackForClient_(pointsCell, evaluationText) {
+  var feedback = String(evaluationText || '').trim();
+  if (normalizeEvaluationPoints_(pointsCell) !== null) {
+    return feedback;
+  }
+  var stripped = stripLegacyScorePrefixFromEvaluation_(feedback);
+  return stripped || feedback;
 }
 
 function setupInstructionsSheet_(ss) {
@@ -1750,7 +1900,7 @@ function getEvaluationsForQuiz(quizId) {
   }
 
   var lastRow = evalSheet.getLastRow();
-  var rows = evalSheet.getRange('A2:H' + lastRow).getValues();
+  var rows = evalSheet.getRange('A2:I' + lastRow).getValues();
   var responseRows = [];
   if (responsesSheet && responsesSheet.getLastRow() >= 2) {
     ensureResponsesHeaders_(responsesSheet);
@@ -1786,6 +1936,9 @@ function getEvaluationsForQuiz(quizId) {
       continue;
     }
 
+    var points = resolveEvaluationPointsForRow_(rows[i][8], evaluation);
+    var evaluationText = resolveEvaluationFeedbackForClient_(rows[i][8], evaluation);
+
     if (!normalizeSheetId_(rows[i][5]) && questionId) {
       idBackfillRows.push(evalRow);
       idBackfillValues.push([questionId]);
@@ -1808,7 +1961,8 @@ function getEvaluationsForQuiz(quizId) {
       studentName: cellText_(rows[i][1]),
       answerText: cellText_(rows[i][2]),
       rubricText: cellText_(rows[i][3]) || (details ? details.rubricText : ''),
-      evaluationText: evaluation,
+      evaluationText: evaluationText,
+      points: points,
       studentReviewText: cellText_(rows[i][7]),
       questionId: questionId,
       quizId: rowQuizId,
@@ -1843,7 +1997,7 @@ function getEvaluationsForQuiz(quizId) {
   return items;
 }
 
-function updateEvaluation(row, evaluationText) {
+function updateEvaluation(row, evaluationText, points) {
   row = Number(row);
   if (!row || row < 2) {
     throw new Error('Invalid evaluation row.');
@@ -1852,6 +2006,11 @@ function updateEvaluation(row, evaluationText) {
   evaluationText = String(evaluationText).trim();
   if (!evaluationText) {
     throw new Error('Evaluation cannot be empty.');
+  }
+
+  points = normalizeEvaluationPoints_(points);
+  if (points === null) {
+    throw new Error('Points must be a whole number from 0 to ' + EVAL_SCORE_MAX_ + '.');
   }
 
   var ss = getQuizSpreadsheet_();
@@ -1865,9 +2024,10 @@ function updateEvaluation(row, evaluationText) {
     throw new Error('Evaluation row not found.');
   }
 
-  var rowValues = evalSheet.getRange('B' + row + ':G' + row).getValues()[0];
+  var rowValues = evalSheet.getRange('B' + row + ':I' + row).getValues()[0];
   var currentEvaluation = cellText_(rowValues[3]).trim();
-  if (evaluationText !== currentEvaluation) {
+  var currentPoints = normalizeEvaluationPoints_(rowValues[7]);
+  if (evaluationText !== currentEvaluation || points !== currentPoints) {
     appendEvaluationHistoryRows_([[
       new Date(),
       'Teacher',
@@ -1875,11 +2035,13 @@ function updateEvaluation(row, evaluationText) {
       normalizeSheetId_(rowValues[4]),
       normalizeSheetId_(rowValues[5]),
       row,
-      evaluationText
+      evaluationText,
+      points
     ]]);
   }
 
   evalSheet.getRange('E' + row).setValue(evaluationText);
+  evalSheet.getRange('I' + row).setValue(points);
   SpreadsheetApp.flush();
   return 'Evaluation updated successfully.';
 }
@@ -2169,26 +2331,7 @@ function extractJsonFromModelText_(text) {
 }
 
 function formatBatchEvaluationText_(score, feedback) {
-  if (score !== '' && score != null) {
-    var n = Math.round(Number(score));
-    if (!isNaN(n)) {
-      if (n < 0) {
-        n = 0;
-      }
-      if (n > EVAL_SCORE_MAX_) {
-        n = EVAL_SCORE_MAX_;
-      }
-      score = n;
-    }
-  }
-  var scoreText = score === '' || score == null ? '' : 'Score: ' + score + '/' + EVAL_SCORE_MAX_;
   feedback = String(feedback || '').trim();
-  if (scoreText && feedback) {
-    return scoreText + '\n\n' + feedback;
-  }
-  if (scoreText) {
-    return scoreText;
-  }
   return feedback || '(no feedback returned)';
 }
 
@@ -2289,7 +2432,12 @@ function callAnthropicBatchGrade_(apiKey, question, rubric, entries) {
     '- Include exactly one object for every student in the input.',
     '- Use the same id values from the input.',
     '- score must be a whole number from 0 to ' + EVAL_SCORE_MAX_ + ' (per the grading philosophy above).',
-    '- feedback should be 2-3 sentences; cite which requested facts were met or missed.'
+    '- feedback is stored separately from the score; do not write "Score: X/4" in feedback.',
+    '- feedback has two parts in this order:',
+    '  1) Context-specific feedback: cite what the student got right or wrong on this question, referencing their answer and the rubric requested facts; note misconceptions when relevant.',
+    '  2) Score justification (closing sentence): state why the score fits the Grading for Equity level (all, most, some, one, or none of the requested facts).',
+    '- Example structure: "You correctly identified … but did not … which the rubric asked for. This earns a 3 because most requested facts are correct, but not all."',
+    '- Be specific and constructive; use as many sentences as needed for substantive feedback (typically 3-6).'
   ].join('\n');
 
   var payload = {
@@ -2388,6 +2536,11 @@ function writeBatchEvaluationResults_(
       newStatus = 'Complete';
     }
 
+    var points = null;
+    if (batchResult.ok && resultMap[String(entry.responseRow)]) {
+      points = normalizeEvaluationPoints_(resultMap[String(entry.responseRow)].score);
+    }
+
     evalSheet.getRange('A' + entry.responseRow + ':G' + entry.responseRow).setValues([[
       entry.timestamp,
       entry.studentName,
@@ -2397,6 +2550,9 @@ function writeBatchEvaluationResults_(
       questionId,
       quizId
     ]]);
+    if (points !== null) {
+      evalSheet.getRange('I' + entry.responseRow).setValue(points);
+    }
     responsesSheet.getRange('D' + entry.responseRow).setValue(newStatus);
     historyRows.push([
       new Date(),
@@ -2405,7 +2561,8 @@ function writeBatchEvaluationResults_(
       questionId,
       quizId,
       entry.responseRow,
-      evaluationText
+      evaluationText,
+      points !== null ? points : ''
     ]);
     written++;
   }

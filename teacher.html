@@ -586,9 +586,54 @@
 
       .nav-row .left,
       .nav-row .right {
+        align-items: center;
         display: flex;
         flex-wrap: wrap;
         gap: 10px;
+      }
+
+      #review-detail .nav-row .eval-points-row {
+        align-items: center;
+        display: flex;
+        flex-shrink: 0;
+        font-size: 14px;
+        gap: 6px;
+        margin-left: 4px;
+      }
+
+      #review-detail .nav-row .eval-points-label {
+        color: #5f6368;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
+      #review-detail .nav-row .eval-points-input {
+        background: #e6f4ea;
+        border: 1px solid #ceead6;
+        border-radius: 6px;
+        box-sizing: border-box;
+        flex: 0 0 auto;
+        font-family: inherit;
+        font-size: 14px;
+        font-weight: 600;
+        padding: 6px 4px;
+        text-align: center;
+        width: 2em;
+      }
+
+      #review-detail .nav-row .eval-points-input:read-only {
+        cursor: default;
+      }
+
+      #review-detail .nav-row .eval-points-input.editing {
+        background: #fff;
+        border-color: #1a73e8;
+        box-shadow: 0 0 0 1px #1a73e8;
+      }
+
+      #review-detail .nav-row .eval-points-suffix {
+        color: #5f6368;
+        white-space: nowrap;
       }
 
       .edit-actions {
@@ -799,6 +844,11 @@
           <div class="nav-row">
             <div class="left">
               <button type="button" class="secondary" onclick="backToReviewList()">Back to Quizzes</button>
+              <div class="eval-points-row" id="reviewPointsRow">
+                <span class="eval-points-label">Points:</span>
+                <input type="text" id="reviewPoints" class="eval-points-input" readonly inputmode="numeric" maxlength="1" aria-label="Points out of 4">
+                <span class="eval-points-suffix">/ 4</span>
+              </div>
             </div>
             <div class="right">
               <button type="button" class="secondary" data-review-nav="prev" onclick="goToReviewPrevious()">Previous</button>
@@ -822,7 +872,7 @@
         </div>
       </section>
 
-      <div class="build-label" id="buildLabel">build: 20260629-eval-history</div>
+      <div class="build-label" id="buildLabel">build: 20260630-points-bottom</div>
     </div>
 
     <div id="processingOverlay" class="processing-overlay">
@@ -843,6 +893,7 @@
         currentIndex: 0,
         editing: false,
         originalEvaluation: '',
+        originalPoints: '',
         imageCache: {}
       };
 
@@ -1373,6 +1424,7 @@
               : 'No evaluations to show.';
           document.getElementById('reviewGrid').style.display = 'none';
           document.getElementById('reviewCommentRow').style.display = 'none';
+          document.getElementById('reviewPointsRow').style.display = 'none';
           document.getElementById('reviewEmptyState').style.display = 'block';
           document.getElementById('reviewEmptyState').textContent =
             reviewState.filterMode === 'comments'
@@ -1389,6 +1441,7 @@
 
         document.getElementById('reviewGrid').style.display = '';
         document.getElementById('reviewCommentRow').style.display = '';
+        document.getElementById('reviewPointsRow').style.display = '';
         document.getElementById('reviewEmptyState').style.display = 'none';
 
         if (reviewState.sortMode === 'question') {
@@ -1410,6 +1463,8 @@
         document.getElementById('reviewRubric').textContent = item.rubricText || '';
         document.getElementById('reviewAnswer').textContent = item.answerText || '';
         document.getElementById('reviewEvaluation').value = item.evaluationText || '';
+        document.getElementById('reviewPoints').value =
+          item.points === null || item.points === undefined || item.points === '' ? '' : String(item.points);
 
         var studentComment = String(item.studentReviewText || '').trim();
         var commentEl = document.getElementById('reviewStudentComment');
@@ -1469,8 +1524,9 @@
       function startEditEvaluation() {
         var evaluationField = document.getElementById('reviewEvaluation');
         reviewState.originalEvaluation = evaluationField.value;
+        reviewState.originalPoints = document.getElementById('reviewPoints').value;
         setEditMode(true);
-        evaluationField.focus();
+        document.getElementById('reviewPoints').focus();
       }
 
       function cancelEditEvaluation() {
@@ -1478,14 +1534,18 @@
           return;
         }
         document.getElementById('reviewEvaluation').value = reviewState.originalEvaluation;
+        document.getElementById('reviewPoints').value = reviewState.originalPoints;
         setEditMode(false);
       }
 
       function setEditMode(editing) {
         reviewState.editing = editing;
         var evaluationField = document.getElementById('reviewEvaluation');
+        var pointsField = document.getElementById('reviewPoints');
         evaluationField.readOnly = !editing;
         evaluationField.classList.toggle('editing', editing);
+        pointsField.readOnly = !editing;
+        pointsField.classList.toggle('editing', editing);
         document.getElementById('reviewEditBtn').style.display = editing ? 'none' : 'inline-block';
         document.getElementById('reviewEditActions').classList.toggle('visible', editing);
         syncReviewNavButtons(
@@ -1498,10 +1558,20 @@
       function saveEvaluation() {
         var item = reviewState.items[reviewState.currentIndex];
         var evaluationText = document.getElementById('reviewEvaluation').value.trim();
+        var pointsRaw = document.getElementById('reviewPoints').value.trim();
         var saveBtn = document.getElementById('reviewSaveBtn');
 
         if (!evaluationText) {
           showPanelError('reviewDetailMessage', { message: 'Evaluation cannot be empty.' });
+          return;
+        }
+        if (!/^\d+$/.test(pointsRaw)) {
+          showPanelError('reviewDetailMessage', { message: 'Points must be a whole number from 0 to 4.' });
+          return;
+        }
+        var points = parseInt(pointsRaw, 10);
+        if (points < 0 || points > 4) {
+          showPanelError('reviewDetailMessage', { message: 'Points must be a whole number from 0 to 4.' });
           return;
         }
 
@@ -1514,7 +1584,9 @@
             hideProcessing();
             saveBtn.disabled = false;
             item.evaluationText = evaluationText;
+            item.points = points;
             reviewState.originalEvaluation = evaluationText;
+            reviewState.originalPoints = String(points);
             setEditMode(false);
             showPanelSuccess('reviewDetailMessage', result);
           })
@@ -1523,7 +1595,7 @@
             saveBtn.disabled = false;
             showPanelError('reviewDetailMessage', err);
           })
-          .updateEvaluation(item.row, evaluationText);
+          .updateEvaluation(item.row, evaluationText, points);
       }
 
       function readQuestionImageFile(input, onReady, onError) {
